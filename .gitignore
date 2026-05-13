@@ -1,0 +1,9 @@
+sul-index/build/
+*.o
+*.a
+*.so
+*.exe
+.cache/
+.vscode/
+.idea/
+*.swp
