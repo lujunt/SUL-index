@@ -2,6 +2,7 @@
 #include "sul/z_order.h"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -115,7 +116,11 @@ int main(int argc, char** argv) {
 
     sul::IndexConfig cfg;
     cfg.dim_count = 2;
-    cfg.error_bound = std::max<int32_t>(8, static_cast<int32_t>(dps.size()) / 1000);
+    if (argc > 2) {
+        cfg.error_bound = std::max<int32_t>(1, std::atoi(argv[2]));
+    } else {
+        cfg.error_bound = std::max<int32_t>(8, static_cast<int32_t>(dps.size()) / 1000);
+    }
     cfg.max_layers = 16;
     std::cout << "[cfg]  error_bound=" << cfg.error_bound
               << " dim=" << cfg.dim_count << "\n";
@@ -247,6 +252,94 @@ int main(int argc, char** argv) {
               << " precision=" << precision
               << "\n";
     std::cout << "[rq] avg latency = " << (rq_ms * 1000.0 / rq_total) << " us\n";
+
+    // ============= 插入测试 =============
+    // 测试目标：覆盖三种插入场景
+    //   场景A：插入学习层（预测槽位为空）—— 用全新随机坐标
+    //   场景B：插入ART层（预测槽位已占）—— 用已有点坐标的副本
+    //   场景C：触发ART节点扩容（Node4→16 / 16→48 / 48→256）
+    //          —— 大量重复/相近坐标插入会让冲突叶子ART持续增长
+    std::cout << "\n----- Insertion Test -----\n";
+
+    // 插入前快照
+    size_t learn_before = index.learning_layer_filled();
+    size_t art_pts_before = index.art_layer_points();
+    size_t art_inner_before = index.art_total_inner_nodes();
+    size_t exp4_before = index.art_total_expand_4_to_16();
+    size_t exp16_before = index.art_total_expand_16_to_48();
+    size_t exp48_before = index.art_total_expand_48_to_256();
+
+    // 准备插入数据：1500 个全新随机点 + 1500 个已有坐标副本
+    const int32_t N_INS_NEW = 1500;
+    const int32_t N_INS_DUP = 1500;
+    std::vector<std::array<int32_t, 2>> ins_coords;
+    ins_coords.reserve(N_INS_NEW + N_INS_DUP);
+
+    std::uniform_real_distribution<double> u01_ins(0.0, 1.0);
+    for (int32_t k = 0; k < N_INS_NEW; ++k) {
+        int32_t cx = sul::scale_unit_double_to_int32(u01_ins(rng));
+        int32_t cy = sul::scale_unit_double_to_int32(u01_ins(rng));
+        ins_coords.push_back({cx, cy});
+    }
+    for (int32_t k = 0; k < N_INS_DUP; ++k) {
+        const sul::DataPoint& q = dps[pick(rng)];
+        ins_coords.push_back({q.dimensions[0], q.dimensions[1]});
+    }
+
+    // 执行插入并按层级计数
+    int32_t cnt_learn = 0, cnt_art = 0, cnt_fail = 0;
+    auto ins_t0 = std::chrono::steady_clock::now();
+    for (const auto& c : ins_coords) {
+        int32_t coords[2] = { c[0], c[1] };
+        sul::InsertResult r = index.insert(coords);
+        if (r == sul::InsertResult::LearningLayer)      ++cnt_learn;
+        else if (r == sul::InsertResult::ARTLayer)      ++cnt_art;
+        else                                            ++cnt_fail;
+    }
+    auto ins_t1 = std::chrono::steady_clock::now();
+    double ins_us_total = std::chrono::duration<double, std::micro>(ins_t1 - ins_t0).count();
+
+    std::cout << "[ins] total=" << ins_coords.size()
+              << " (new=" << N_INS_NEW << " dup=" << N_INS_DUP << ")\n";
+    std::cout << "[ins] learning_layer_inserts=" << cnt_learn
+              << " art_layer_inserts=" << cnt_art
+              << " failed=" << cnt_fail << "\n";
+    std::cout << "[ins] avg insert latency = "
+              << (ins_us_total / ins_coords.size()) << " us/point\n";
+
+    // 插入后快照对比
+    std::cout << "[ins] learning_filled "  << learn_before
+              << " -> " << index.learning_layer_filled()
+              << "  (+ " << (index.learning_layer_filled() - learn_before) << ")\n";
+    std::cout << "[ins] art_points "       << art_pts_before
+              << " -> " << index.art_layer_points()
+              << "  (+ " << (index.art_layer_points() - art_pts_before) << ")\n";
+    std::cout << "[ins] art_inner_nodes "  << art_inner_before
+              << " -> " << index.art_total_inner_nodes()
+              << "  (+ " << (index.art_total_inner_nodes() - art_inner_before) << ")\n";
+    std::cout << "[ins] ART expansions: "
+              << "N4->N16="    << (index.art_total_expand_4_to_16()   - exp4_before)
+              << ", N16->N48="  << (index.art_total_expand_16_to_48()  - exp16_before)
+              << ", N48->N256=" << (index.art_total_expand_48_to_256() - exp48_before)
+              << "\n";
+
+    // 插入后查询：用相同坐标做点查询，统计命中率与平均查询延迟
+    int32_t q_total = 0, q_hit = 0;
+    auto pq2_t0 = std::chrono::steady_clock::now();
+    for (const auto& c : ins_coords) {
+        int32_t coords[2] = { c[0], c[1] };
+        sul::DataPoint* found = index.point_query(coords);
+        ++q_total;
+        if (found) ++q_hit;
+    }
+    auto pq2_t1 = std::chrono::steady_clock::now();
+    double pq2_us_total = std::chrono::duration<double, std::micro>(pq2_t1 - pq2_t0).count();
+
+    std::cout << "[ins-pq] queries=" << q_total
+              << " hits=" << q_hit
+              << " hit_rate=" << (static_cast<double>(q_hit) / q_total) << "\n";
+    std::cout << "[ins-pq] avg query latency = "
+              << (pq2_us_total / q_total) << " us/point\n";
 
     std::cout << "\n[done]\n";
     return 0;

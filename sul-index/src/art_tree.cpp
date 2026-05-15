@@ -53,6 +53,7 @@ ARTNodeType type_of(void* node) {
     return reinterpret_cast<ARTNodeHeader*>(node)->type;
 }
 
+// Node48的位图操作（48位用uint64_t存储）
 bool n48_has(const ARTNode48* n, int32_t i) {
     return ((n->bitmap >> i) & 1ULL) != 0ULL;
 }
@@ -60,6 +61,7 @@ void n48_set(ARTNode48* n, int32_t i) {
     n->bitmap |= (1ULL << i);
 }
 
+// Node256的位图操作（256位用uint64_t[4]存储，每个元素管理64位）
 bool n256_has(const ARTNode256* n, int32_t i) {
     return ((n->bitmap[i >> 6] >> (i & 63)) & 1ULL) != 0ULL;
 }
@@ -68,9 +70,8 @@ void n256_set(ARTNode256* n, int32_t i) {
 }
 
 int32_t find_slot_node4(const ARTNode4* n, uint8_t byte_val) {
-    for (int32_t i = 0; i < 4; ++i) {
+    for (int32_t i = 0; i < 4; ++i)
         if ((n->bitmap & (1u << i)) && n->keys[i] == byte_val) return i;
-    }
     return -1;
 }
 int32_t find_empty_node4(const ARTNode4* n) {
@@ -79,9 +80,8 @@ int32_t find_empty_node4(const ARTNode4* n) {
 }
 
 int32_t find_slot_node16(const ARTNode16* n, uint8_t byte_val) {
-    for (int32_t i = 0; i < 16; ++i) {
+    for (int32_t i = 0; i < 16; ++i)
         if ((n->bitmap & (1u << i)) && n->keys[i] == byte_val) return i;
-    }
     return -1;
 }
 int32_t find_empty_node16(const ARTNode16* n) {
@@ -90,9 +90,8 @@ int32_t find_empty_node16(const ARTNode16* n) {
 }
 
 int32_t find_slot_node48(const ARTNode48* n, uint8_t byte_val) {
-    for (int32_t i = 0; i < 48; ++i) {
+    for (int32_t i = 0; i < 48; ++i)
         if (n48_has(n, i) && n->keys[i] == byte_val) return i;
-    }
     return -1;
 }
 int32_t find_empty_node48(const ARTNode48* n) {
@@ -101,9 +100,8 @@ int32_t find_empty_node48(const ARTNode48* n) {
 }
 
 int32_t find_slot_node256(const ARTNode256* n, uint8_t byte_val) {
-    for (int32_t i = 0; i < 256; ++i) {
+    for (int32_t i = 0; i < 256; ++i)
         if (n256_has(n, i) && n->keys[i] == byte_val) return i;
-    }
     return -1;
 }
 int32_t find_empty_node256(const ARTNode256* n) {
@@ -111,10 +109,10 @@ int32_t find_empty_node256(const ARTNode256* n) {
     return -1;
 }
 
-}
+} // namespace
 
-ARTTree::ARTTree()
-    : root_(nullptr), inner_count_(0), leaf_count_(0) {}
+ARTTree::ARTTree(int32_t key_len)
+    : root_(nullptr), inner_count_(0), leaf_count_(0), key_len_(key_len) {}
 
 ARTTree::~ARTTree() {
     if (root_) destroy(root_, 0);
@@ -129,27 +127,23 @@ void ARTTree::destroy(void* node, int32_t depth) {
     }
     if (t == AT_NODE4) {
         auto* n = reinterpret_cast<ARTNode4*>(node);
-        for (int32_t i = 0; i < 4; ++i) {
+        for (int32_t i = 0; i < 4; ++i)
             if (n->bitmap & (1u << i)) destroy(n->children[i], depth + 1);
-        }
         delete n;
     } else if (t == AT_NODE16) {
         auto* n = reinterpret_cast<ARTNode16*>(node);
-        for (int32_t i = 0; i < 16; ++i) {
+        for (int32_t i = 0; i < 16; ++i)
             if (n->bitmap & (1u << i)) destroy(n->children[i], depth + 1);
-        }
         delete n;
     } else if (t == AT_NODE48) {
         auto* n = reinterpret_cast<ARTNode48*>(node);
-        for (int32_t i = 0; i < 48; ++i) {
+        for (int32_t i = 0; i < 48; ++i)
             if (n48_has(n, i)) destroy(n->children[i], depth + 1);
-        }
         delete n;
     } else {
         auto* n = reinterpret_cast<ARTNode256*>(node);
-        for (int32_t i = 0; i < 256; ++i) {
+        for (int32_t i = 0; i < 256; ++i)
             if (n256_has(n, i)) destroy(n->children[i], depth + 1);
-        }
         delete n;
     }
 }
@@ -162,13 +156,14 @@ void ARTTree::insert(DataPoint* dp) {
     root_ = insert_inner(root_, dp->key_bytes, dp, 0);
 }
 
-void* ARTTree::insert_inner(void* node, const uint8_t key_bytes[KEY_BYTES],
-                            DataPoint* dp, int32_t depth) {
+void* ARTTree::insert_inner(void* node, const uint8_t* key_bytes,
+                             DataPoint* dp, int32_t depth) {
     uint8_t byte_val = key_bytes[depth];
     ARTNodeType t = type_of(node);
 
+    // 到达最后一层（depth == key_len_-1）则挂叶节点，否则向下递归
     auto attach_or_recurse = [&](void*& child_slot) {
-        if (depth == KEY_BYTES - 1) {
+        if (depth == key_len_ - 1) {
             if (child_slot && type_of(child_slot) == AT_LEAF) {
                 reinterpret_cast<ARTLeafNode*>(child_slot)->data_point = dp;
             } else {
@@ -190,10 +185,7 @@ void* ARTTree::insert_inner(void* node, const uint8_t key_bytes[KEY_BYTES],
     if (t == AT_NODE4) {
         auto* n = reinterpret_cast<ARTNode4*>(node);
         int32_t idx = find_slot_node4(n, byte_val);
-        if (idx >= 0) {
-            attach_or_recurse(n->children[idx]);
-            return node;
-        }
+        if (idx >= 0) { attach_or_recurse(n->children[idx]); return node; }
         int32_t empty = find_empty_node4(n);
         if (empty >= 0) {
             n->keys[empty] = byte_val;
@@ -202,17 +194,14 @@ void* ARTTree::insert_inner(void* node, const uint8_t key_bytes[KEY_BYTES],
             attach_or_recurse(n->children[empty]);
             return node;
         }
-        void* expanded = expand_node4_to_node16(n);
-        return insert_inner(expanded, key_bytes, dp, depth);
+        // Node4已满，扩容为Node16
+        return insert_inner(expand_node4_to_node16(n), key_bytes, dp, depth);
     }
 
     if (t == AT_NODE16) {
         auto* n = reinterpret_cast<ARTNode16*>(node);
         int32_t idx = find_slot_node16(n, byte_val);
-        if (idx >= 0) {
-            attach_or_recurse(n->children[idx]);
-            return node;
-        }
+        if (idx >= 0) { attach_or_recurse(n->children[idx]); return node; }
         int32_t empty = find_empty_node16(n);
         if (empty >= 0) {
             n->keys[empty] = byte_val;
@@ -221,17 +210,14 @@ void* ARTTree::insert_inner(void* node, const uint8_t key_bytes[KEY_BYTES],
             attach_or_recurse(n->children[empty]);
             return node;
         }
-        void* expanded = expand_node16_to_node48(n);
-        return insert_inner(expanded, key_bytes, dp, depth);
+        // Node16已满，扩容为Node48
+        return insert_inner(expand_node16_to_node48(n), key_bytes, dp, depth);
     }
 
     if (t == AT_NODE48) {
         auto* n = reinterpret_cast<ARTNode48*>(node);
         int32_t idx = find_slot_node48(n, byte_val);
-        if (idx >= 0) {
-            attach_or_recurse(n->children[idx]);
-            return node;
-        }
+        if (idx >= 0) { attach_or_recurse(n->children[idx]); return node; }
         int32_t empty = find_empty_node48(n);
         if (empty >= 0) {
             n->keys[empty] = byte_val;
@@ -240,23 +226,20 @@ void* ARTTree::insert_inner(void* node, const uint8_t key_bytes[KEY_BYTES],
             attach_or_recurse(n->children[empty]);
             return node;
         }
-        void* expanded = expand_node48_to_node256(n);
-        return insert_inner(expanded, key_bytes, dp, depth);
+        // Node48已满，扩容为Node256
+        return insert_inner(expand_node48_to_node256(n), key_bytes, dp, depth);
     }
 
+    // AT_NODE256：最大节点，不再扩容
     auto* n = reinterpret_cast<ARTNode256*>(node);
     int32_t idx = find_slot_node256(n, byte_val);
-    if (idx >= 0) {
-        attach_or_recurse(n->children[idx]);
-        return node;
-    }
+    if (idx >= 0) { attach_or_recurse(n->children[idx]); return node; }
     int32_t empty = find_empty_node256(n);
     if (empty >= 0) {
         n->keys[empty] = byte_val;
         n256_set(n, empty);
         n->children[empty] = nullptr;
         attach_or_recurse(n->children[empty]);
-        return node;
     }
     return node;
 }
@@ -275,6 +258,7 @@ void* ARTTree::expand_node4_to_node16(ARTNode4* n4) {
     bool was_root = (root_ == n4);
     delete n4;
     if (was_root) root_ = n16;
+    ++expand_4_to_16_;
     return n16;
 }
 
@@ -292,6 +276,7 @@ void* ARTTree::expand_node16_to_node48(ARTNode16* n16) {
     bool was_root = (root_ == n16);
     delete n16;
     if (was_root) root_ = n48;
+    ++expand_16_to_48_;
     return n48;
 }
 
@@ -309,17 +294,17 @@ void* ARTTree::expand_node48_to_node256(ARTNode48* n48) {
     bool was_root = (root_ == n48);
     delete n48;
     if (was_root) root_ = n256;
+    ++expand_48_to_256_;
     return n256;
 }
 
-DataPoint* ARTTree::search(const uint8_t key_bytes[KEY_BYTES]) const {
+DataPoint* ARTTree::search(const uint8_t* key_bytes) const {
     void* cur = root_;
-    for (int32_t depth = 0; depth < KEY_BYTES && cur; ++depth) {
+    // 逐层按当前字节匹配，遍历key_len_层
+    for (int32_t depth = 0; depth < key_len_ && cur; ++depth) {
         uint8_t byte_val = key_bytes[depth];
         ARTNodeType t = type_of(cur);
-        if (t == AT_LEAF) {
-            return reinterpret_cast<ARTLeafNode*>(cur)->data_point;
-        }
+        if (t == AT_LEAF) return reinterpret_cast<ARTLeafNode*>(cur)->data_point;
         if (t == AT_NODE4) {
             auto* n = reinterpret_cast<const ARTNode4*>(cur);
             int32_t idx = find_slot_node4(n, byte_val);
@@ -342,20 +327,16 @@ DataPoint* ARTTree::search(const uint8_t key_bytes[KEY_BYTES]) const {
             cur = n->children[idx];
         }
     }
-    if (cur && type_of(cur) == AT_LEAF) {
+    if (cur && type_of(cur) == AT_LEAF)
         return reinterpret_cast<ARTLeafNode*>(cur)->data_point;
-    }
     return nullptr;
 }
 
 void ARTTree::collect_subtree(void* node, int32_t depth,
-                              std::vector<DataPoint*>& out) const {
+                               std::vector<DataPoint*>& out) const {
     if (!node) return;
     ARTNodeType t = type_of(node);
-    if (t == AT_LEAF) {
-        out.push_back(reinterpret_cast<ARTLeafNode*>(node)->data_point);
-        return;
-    }
+    if (t == AT_LEAF) { out.push_back(reinterpret_cast<ARTLeafNode*>(node)->data_point); return; }
     if (t == AT_NODE4) {
         auto* n = reinterpret_cast<const ARTNode4*>(node);
         for (int32_t i = 0; i < 4; ++i)
@@ -381,23 +362,23 @@ std::vector<DataPoint*> ARTTree::collect_all() const {
     return out;
 }
 
+// 范围收集：tight_low/tight_high表示当前层是否还在边界约束内
 void ARTTree::range_collect(void* node, int32_t depth,
-                            const uint8_t low[KEY_BYTES], const uint8_t high[KEY_BYTES],
-                            bool tight_low, bool tight_high,
-                            std::vector<DataPoint*>& out) const {
+                             const uint8_t* low, const uint8_t* high,
+                             bool tight_low, bool tight_high,
+                             std::vector<DataPoint*>& out) const {
     if (!node) return;
     ARTNodeType t = type_of(node);
-    if (t == AT_LEAF) {
-        out.push_back(reinterpret_cast<ARTLeafNode*>(node)->data_point);
-        return;
-    }
-    uint8_t lb = tight_low ? low[depth] : 0x00;
+    if (t == AT_LEAF) { out.push_back(reinterpret_cast<ARTLeafNode*>(node)->data_point); return; }
+
+    // 当前层的字节范围：若已不在边界约束内则全范围[0x00, 0xFF]
+    uint8_t lb = tight_low  ? low[depth]  : 0x00;
     uint8_t hb = tight_high ? high[depth] : 0xFF;
     if (lb > hb) return;
 
     auto walk = [&](uint8_t k, void* child) {
         if (k < lb || k > hb) return;
-        bool ntl = tight_low && (k == low[depth]);
+        bool ntl = tight_low  && (k == low[depth]);
         bool nth = tight_high && (k == high[depth]);
         range_collect(child, depth + 1, low, high, ntl, nth, out);
     };
@@ -421,8 +402,8 @@ void ARTTree::range_collect(void* node, int32_t depth,
     }
 }
 
-std::vector<DataPoint*> ARTTree::range_search(const uint8_t low[KEY_BYTES],
-                                              const uint8_t high[KEY_BYTES]) const {
+std::vector<DataPoint*> ARTTree::range_search(const uint8_t* low,
+                                               const uint8_t* high) const {
     std::vector<DataPoint*> out;
     range_collect(root_, 0, low, high, true, true, out);
     return out;

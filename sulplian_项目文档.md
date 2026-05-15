@@ -131,7 +131,7 @@ SUL-plain-index 由两层组成：
 ```cpp
 // 原始多维数据点
 struct DataPoint {
-    int32_t dimensions[MAX_DIMS];  // 多维坐标值 (默认 2-4 维)
+    int32_t dimensions[MAX_DIMS];  // 多维坐标值 (默认 2-6 维)
     int32_t dim_count;              // 维度数
     int32_t orig_id;                // 原始数据 ID（可选，用于追踪与日志）
     uint64_t z_value;              // Z曲线一维映射值 (缓存)
