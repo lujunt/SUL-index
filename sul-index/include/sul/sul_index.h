@@ -18,6 +18,16 @@ enum class InsertResult : int32_t {
     ARTLayer      = 2   // 预测槽位已被占用，回退到ART层
 };
 
+// 范围查询的ART耗时统计：用于模拟"多ART并行查找"的延迟
+//   art_total_us：所有ART操作耗时之和（顺序执行的实际开销）
+//   art_max_us  ：单次ART操作的最长耗时（并行执行下的关键路径）
+//   art_count   ：本次range_query执行的ART操作次数
+struct RangeQueryStats {
+    double  art_total_us = 0.0;
+    double  art_max_us   = 0.0;
+    int32_t art_count    = 0;
+};
+
 class SULPlainIndex {
 public:
     explicit SULPlainIndex(const IndexConfig& config);
@@ -34,8 +44,11 @@ public:
 
     DataPoint* point_query(const int32_t* coords) const;
 
+    // 范围查询。可选参数stats：传入非空指针时会记录ART各次搜索耗时，
+    // 供上层根据 max_us 模拟"多ART并行"下的查询延迟。
     std::vector<DataPoint*> range_query(const int32_t* low,
-                                        const int32_t* high) const;
+                                        const int32_t* high,
+                                        RangeQueryStats* stats = nullptr) const;
 
     size_t total_points() const { return all_points_.size() + inserted_points_.size(); }
     size_t inserted_count() const { return inserted_points_.size(); }
@@ -51,6 +64,15 @@ public:
     size_t art_total_expand_48_to_256() const;
 
     const IndexConfig& config() const { return config_; }
+
+    // 加密镜像构建用：只读访问内部结构
+    const std::vector<DataPoint>& all_points() const { return all_points_; }
+    const std::vector<std::vector<GPLInnerNode>>& inner_layers() const { return inner_layers_; }
+    const std::vector<GPLLeafNode>& leaf_nodes() const { return leaf_nodes_; }
+    const std::vector<std::unique_ptr<ARTTree>>& art_trees() const { return art_trees_; }
+
+    // 加密版查询时需要使用 locate_leaf 与槽位预测（同源逻辑，避免重复实现）
+    int32_t locate_leaf_for_cipher(uint64_t z_value) const { return locate_leaf(z_value); }
 
 private:
     IndexConfig config_;
