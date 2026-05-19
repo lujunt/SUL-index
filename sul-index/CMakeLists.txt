@@ -21,6 +21,7 @@ set(SUL_SOURCES
     src/art_tree.cpp
     src/gpl_builder.cpp
     src/sul_index.cpp
+    src/util/csv_loader.cpp
 )
 add_library(sul_index STATIC ${SUL_SOURCES})
 
@@ -59,4 +60,11 @@ if(BUILD_CIPHER)
         PUBLIC sul_index
         PUBLIC ${OPHELIB_ROOT}/lib/libophelib.a
         PUBLIC ntl gmpxx gmp gomp pthread)
+
+    add_executable(sul_cipher_demo main_cipher.cpp)
+    target_link_libraries(sul_cipher_demo PRIVATE sul_cipher_index)
+
+    # 明文 vs 密文对比 demo（同一查询、双索引、逐项比对）
+    add_executable(sul_compare_demo main_compare.cpp)
+    target_link_libraries(sul_compare_demo PRIVATE sul_cipher_index)
 endif()
