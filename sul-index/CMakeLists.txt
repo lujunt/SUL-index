@@ -22,11 +22,16 @@ set(SUL_SOURCES
     src/gpl_builder.cpp
     src/sul_index.cpp
     src/util/csv_loader.cpp
+    src/util/query_loader.cpp
 )
 add_library(sul_index STATIC ${SUL_SOURCES})
 
 add_executable(sul_demo main.cpp)
 target_link_libraries(sul_demo PRIVATE sul_index)
+
+# 查询窗口生成器：从数据集 CSV 生成 5 个不同比例的查询文件
+add_executable(sul_query_gen main_query_gen.cpp)
+target_link_libraries(sul_query_gen PRIVATE sul_index)
 
 # ============================================================================
 # 第二部分：密文索引（依赖 ophelib + NTL + GMP）
