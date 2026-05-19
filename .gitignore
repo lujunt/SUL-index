@@ -1,9 +1,31 @@
+# Build outputs
+build/
 sul-index/build/
 *.o
 *.a
 *.so
+*.dylib
 *.exe
-.cache/
+
+# CMake artifacts
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+compile_commands.json
+
+# IDE & local tooling
 .vscode/
 .idea/
+.claude/
+.cache/
 *.swp
+*~
+
+# agreements 旧 demo 二进制
+sul-index/agreements/agreements/sic
+sul-index/agreements/agreements/spi
+
+# OS noise
+.DS_Store
+Thumbs.db

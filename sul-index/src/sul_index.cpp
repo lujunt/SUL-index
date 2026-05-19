@@ -1,6 +1,7 @@
 #include "sul/sul_index.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -159,7 +160,8 @@ DataPoint* SULPlainIndex::point_query(const int32_t* coords) const {
 }
 
 std::vector<DataPoint*> SULPlainIndex::range_query(const int32_t* low,
-                                                    const int32_t* high) const {
+                                                    const int32_t* high,
+                                                    RangeQueryStats* stats) const {
     std::vector<DataPoint*> result;
     if (leaf_nodes_.empty()) return result;
 
@@ -198,12 +200,26 @@ std::vector<DataPoint*> SULPlainIndex::range_query(const int32_t* low,
             if (leaf.occupied[p] && leaf.data_slots[p]) candidates.push_back(leaf.data_slots[p]);
     };
 
+    // ART操作计时helper：对每次ART搜索单独计时，累计到stats
+    // 模拟"多ART并行查找"时，关键路径耗时 = 所有ART操作耗时中的最大值
+    auto timed_art = [&](auto&& fn) {
+        if (!stats) return fn();
+        auto t0 = std::chrono::steady_clock::now();
+        auto v = fn();
+        auto t1 = std::chrono::steady_clock::now();
+        double us = std::chrono::duration<double, std::micro>(t1 - t0).count();
+        stats->art_total_us += us;
+        if (us > stats->art_max_us) stats->art_max_us = us;
+        ++stats->art_count;
+        return v;
+    };
+
     if (left == right) {
         // 查询范围在同一叶子内
         collect_leaf_slots_range(left, z_lo, z_hi);
         const ARTTree* art = art_trees_[left].get();
         if (art && !art->empty()) {
-            auto v = art->range_search(kb_lo, kb_hi);
+            auto v = timed_art([&]{ return art->range_search(kb_lo, kb_hi); });
             for (auto* p : v) if (p->z_value >= z_lo && p->z_value <= z_hi) candidates.push_back(p);
         }
     } else {
@@ -214,7 +230,7 @@ std::vector<DataPoint*> SULPlainIndex::range_query(const int32_t* low,
             if (art && !art->empty()) {
                 uint8_t kb_max[MAX_KEY_BYTES];
                 std::memset(kb_max, 0xFF, static_cast<size_t>(kl));
-                auto v = art->range_search(kb_lo, kb_max);
+                auto v = timed_art([&]{ return art->range_search(kb_lo, kb_max); });
                 for (auto* p : v) if (p->z_value >= z_lo) candidates.push_back(p);
             }
         }
@@ -223,7 +239,7 @@ std::vector<DataPoint*> SULPlainIndex::range_query(const int32_t* low,
             collect_leaf_slots_all(i);
             const ARTTree* art = art_trees_[i].get();
             if (art && !art->empty()) {
-                auto v = art->collect_all();
+                auto v = timed_art([&]{ return art->collect_all(); });
                 for (auto* p : v) candidates.push_back(p);
             }
         }
@@ -234,7 +250,7 @@ std::vector<DataPoint*> SULPlainIndex::range_query(const int32_t* low,
             if (art && !art->empty()) {
                 uint8_t kb_min[MAX_KEY_BYTES];
                 std::memset(kb_min, 0x00, static_cast<size_t>(kl));
-                auto v = art->range_search(kb_min, kb_hi);
+                auto v = timed_art([&]{ return art->range_search(kb_min, kb_hi); });
                 for (auto* p : v) if (p->z_value <= z_hi) candidates.push_back(p);
             }
         }

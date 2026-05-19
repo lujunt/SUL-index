@@ -1,21 +1,27 @@
-# SUL-plain-index 项目文档
+# SUL-index 项目文档
 
-> **项目名称**: SUL-plain-index（Secure Updated Learned Index — 明文实现版本）  
+> **项目名称**: SUL-index（Secure Updated Learned Index）  
 > **数据类型**: 32 位整数多维数据点  
 > **技术栈**: WSL2 + Ubuntu 22.04 + C++17 (GCC 11+)  
 > **构建系统**: CMake 3.16+  
-> **版本**: v1.3  
-> **日期**: 2026-05-13  
+> **版本**: v1.4  
+> **日期**: 2026-05-18  
 
-> **v1.3 变更摘要（与 v1.2 对照本次明文实现）**
-> - **数据类型与位宽**：坐标采用 32 位整数，2 维 Z 曲线编码后 z_value 占用 ≤ 64 位 → `key_bytes` 由 4 字节扩展为 **8 字节**，ART 层由 4 层增至 **8 层**。
+> **v1.4 变更摘要（本次更新）**
+> - **文档重组**：原 SUL-plain-index 项目文档更名为 SUL-index 项目文档；明文实现保留为第一部分（§1–§11），新增第二部分（§12–§17）描述密文实现 SUL-cipher-index。
+> - **位宽与键值字节数修正**：引入 `BITS_PER_DIM = 16`（每维度 16 位），`key_len() = BITS_PER_DIM × dim_count / 8` 运行时方法替代旧版硬编码 8 字节；`key_bytes` 字段改为 `uint8_t key_bytes[MAX_KEY_BYTES]`（`MAX_KEY_BYTES = 16`）。ART 层数随维度动态变化：2D → 4 层，6D → 12 层。
+> - **单点插入实现**：完成插入路径（§6），支持 GPL 预测槽位直接写入与 ART 层回退插入。
+
+> **v1.3 变更摘要（历史）**
+> - **数据类型与位宽**：坐标采用 32 位整数；v1.3 阶段 `key_bytes` 暂定 8 字节 / ART 8 层（已在 v1.4 修正为按维度动态计算）。
 > - **学习层叶子槽位**：`slot_count` 从固定 64 改为**按段长度动态分配**（`slot_count = max(2 × seg_len + 2 × ε, 8)`），槽位占用状态用按字节数组（功能等价于 bitmap）。
 > - **ART 节点类型**：实现完整四层扩容链 `Node4 → Node16 → Node48 → Node256`。Node48/Node256 按"延续 Node16 模式"设计（`keys[N] + bitmap + children[N]`，仅容量扩大）。
-> - **不在本次范围**：插入路径、序列化与反序列化、实验记录器（见 §6/§9/§10，保留为后续工作）。
 
 ---
 
 ## 目录
+
+### 第一部分：明文实现（SUL-plain-index）
 
 1. [概述](#1-概述)
 2. [系统架构](#2-系统架构)
@@ -28,6 +34,15 @@
 9. [序列化与反序列化](#9-序列化与反序列化)
 10. [实验记录与分析](#10-实验记录与分析)
 11. [参考文献](#11-参考文献)
+
+### 第二部分：密文实现（SUL-cipher-index）
+
+12. [SUL-cipher-index 概述](#12-sul-cipher-index-概述)
+13. [加密参数与双方架构](#13-加密参数与双方架构)
+14. [密文构建流程](#14-密文构建流程)
+15. [基础安全子协议](#15-基础安全子协议)
+16. [安全查询](#16-安全查询)
+17. [安全插入](#17-安全插入)
 
 ---
 
@@ -61,7 +76,7 @@ SUL-plain-index 是一种面向多维数据的混合学习索引结构，为 SUL
 - **自适应节点**: ART 层采用 Node4/Node16 等自适应节点结构，按字节粒度索引
 - **范围查询优化**: 通过边界定位 + 候选集合并实现高效多维范围查询
 - **工业级可用性**: 遵循工业项目标准，模块化设计、完整测试覆盖、清晰接口定义
-- **明文实现**: 当前为明文（plaintext）版本 SUL-plain-index，数据以明文形式存储和查询；后续规划密文版本 SUL-cipher-index，引入同态加密或可信执行环境（TEE）实现隐私保护索引
+- **双版本架构**: 本文档第一部分（§1–§11）为明文版本 SUL-plain-index，数据以明文形式存储和查询；第二部分（§12–§17）为密文版本 SUL-cipher-index，基于 Paillier 同态加密实现隐私保护索引
 - **当前版本**: 暂不考虑并发控制，单线程实现，后续版本再引入并发优化
 
 ### 1.4 参考论文
@@ -135,14 +150,11 @@ struct DataPoint {
     int32_t dim_count;              // 维度数
     int32_t orig_id;                // 原始数据 ID（可选，用于追踪与日志）
     uint64_t z_value;              // Z曲线一维映射值 (缓存)
-    uint8_t key_bytes[8];          // 字节流：将 z_value 按 8 位分割 (大端序)
-                                   // key_bytes[0] = (z_value >> 56) & 0xFF (最高字节)
-                                   // ...
-                                   // key_bytes[7] =  z_value        & 0xFF (最低字节)
+    uint8_t key_bytes[MAX_KEY_BYTES]; // 字节流：将编码键值按 8 位分割 (大端序)，实际有效长度 = key_len() = 2×dim_count
 };
 ```
 
-> **设计说明**: `key_bytes` 是 z_value 的预计算字节表示。ART 层遍历时直接使用此字段，避免查询时重复进行字节分割。由于 2 维 32 位整数坐标经 Z 曲线交错位编码后 z_value 可达 ~64 位，因此按 8 位分割为 8 字节（即 ART 层 8 层）。构建时与 z_value 一起计算并缓存。
+> **设计说明**: `key_bytes` 是编码键值的预计算字节表示，ART 层遍历时直接使用此字段，避免重复字节分割。每维度取低 `BITS_PER_DIM`(=16) 位参与交错位编码，实际键字节数 `key_len() = BITS_PER_DIM × dim_count / 8`（2D → 4 字节 / 4 层，6D → 12 字节 / 12 层）；`MAX_KEY_BYTES`(=16) 为静态数组上限。构建时与 z_value 一起计算并缓存。
 
 #### 3.1.2 Z 曲线编码
 
@@ -161,10 +173,10 @@ int64_t z_order_encode(const int32_t* coords, int dim_count) {
     return result;
 }
 
-// 字节流生成: 将 z_value 转换为 8 字节大端序
-void z_value_to_bytes(uint64_t z_value, uint8_t* out_bytes) {
-    for (int i = 0; i < 8; ++i) {
-        int shift = (7 - i) * 8;
+// 字节流生成: 将 z_value 转换为 key_len 字节大端序 (key_len = BITS_PER_DIM × dim_count / 8)
+void z_value_to_bytes(uint64_t z_value, uint8_t* out_bytes, int key_len) {
+    for (int i = 0; i < key_len; ++i) {
+        int shift = (key_len - 1 - i) * 8;
         out_bytes[i] = (z_value >> shift) & 0xFF;
     }
 }
@@ -249,7 +261,7 @@ Layer N (Leaf):       [GPLLeafNode] [GPLLeafNode] ...        ← 叶子节点层
 
 ### 3.3 ART 层数据结构
 
-ART 层处理学习层无法精确预测的数据点。键值已预计算为 `DataPoint.key_bytes`（4 字节），ART 的每一层对应一个字节。
+ART 层处理学习层无法精确预测的数据点。键值已预计算为 `DataPoint.key_bytes`（`key_len()` 字节，随维度动态变化），ART 的每一层对应一个字节。
 
 #### 3.3.1 节点类型
 
@@ -531,8 +543,9 @@ struct IndexConfig {
 
     // 注：叶子节点 slot_count 由 GPL 段长度动态决定，不再使用固定上限。
 
-    // ART 层参数
-    int32_t art_key_bytes = 8;          // 键值字节数 (Z 曲线编码 z_value ≤ 64 位 = 8 字节)
+    // ART key 字节数由 key_len() 方法运行时确定：BITS_PER_DIM(16) × dim_count / 8
+    // 例：2 维 → 4 字节 / 4 层；6 维 → 12 字节 / 12 层
+    int32_t key_len() const { return BITS_PER_DIM * dim_count / 8; }
     // 注：Node4 / Node16 / Node48 / Node256 全部默认启用，按需自动扩容，无需开关。
 };
 ```
@@ -623,7 +636,7 @@ function learned_layer_search(key):
 function art_search(key_bytes, art_root):
     current = art_root
 
-    for byte_idx from 0 to 7:  // 8 个字节
+    for byte_idx from 0 to key_len()-1:  // key_len() 个字节
         target_byte = key_bytes[byte_idx]
 
         switch type_of(current):
@@ -918,7 +931,7 @@ Z曲线编码 → z_value + key_bytes
 Step 1: Z曲线编码 + 字节流生成
   for each point:
       point.z_value = z_order_encode(point.coords)
-      point.key_bytes = z_value_to_bytes(point.z_value)  // 预计算 4 字节流
+      point.key_bytes = z_value_to_bytes(point.z_value, key_len())  // 预计算 key_len() 字节流
   ↓
 Step 2: 排序
   sort data_points by z_value
@@ -1112,7 +1125,7 @@ for each leaf in leaf_nodes:
 
 ```
 function art_insert(node, key_bytes, data_point, depth):
-    if depth == 4:  // 到达叶子层 (4 字节处理完毕)
+    if depth == key_len():  // 到达叶子层 (key_len() 字节处理完毕)
         // 在 node 对应位置创建/更新叶子节点
         // node 是内部节点，需要在对应字节位置挂载 ARTLeafNode
         return  // 不应该走到这里，应该在 depth=3 时处理
@@ -1124,7 +1137,7 @@ function art_insert(node, key_bytes, data_point, depth):
         for i in 0..3:
             if node.bitmap.has(i) and node.keys[i] == byte_val:
                 // 已存在，继续向下
-                if depth == 3:  // 最后一层：更新叶子节点
+                if depth == key_len()-1:  // 最后一层：更新叶子节点
                     node.children[i] = new ARTLeafNode(data_point)
                 else:
                     art_insert(node.children[i], key_bytes, data_point, depth + 1)
@@ -1800,12 +1813,12 @@ logger.export_csv("experiments/exp_epsilon_1000.csv");
 | PGM | Piecewise Geometric Model | 分段几何模型索引 |
 | 误差界 | Error Bound | 模型预测允许的最大位置偏差 |
 | 位图 | Bitmap | 用比特位标记数组元素是否存在 |
-| 字节流 | Byte Stream / key_bytes | z_value 按 8 位分割的 4 字节大端序表示 |
+| 字节流 | Byte Stream / key_bytes | 编码键值按 8 位分割的大端序表示，实际长度 = key_len() = 2×dim_count 字节 |
 
 ## 附录 B: 实现注意事项
 
 1. **32 位整数**: 数据类型限定为 32 位有符号整数，Z 曲线编码后为 32×dim 位以内的整数；对浮点数据集需先按维度独立缩放到 `[0, INT32_MAX)` 再编码
-2. **字节分割**: ART 层每个字节对应一层，z_value 视为 64 位无符号 → **8 字节 = 8 层**
+2. **字节分割与层数**: ART 层每个字节对应一层，每维度参与 `BITS_PER_DIM`(=16) 位交错编码 → `key_len() = 2×dim_count` 字节 = ART 层数（2D → 4 层，6D → 12 层）；`MAX_KEY_BYTES`(=16) 为静态数组上限
 3. **不实现路径压缩**: SUL-plain-index 中 ART 层每层严格对应一个字节，与标准 ART 不同
 4. **叶子节点槽位**: 按 GPL 段长度**动态分配** `slot_count = max(2×seg_len + 2×ε, 8)`；`art_root` 字段始终保留（空树为 nullptr）
 5. **Node48/Node256**: **已实现**，扩容链 Node4 → Node16 → Node48 → Node256；Node48/256 沿用 Node16 的 `keys + bitmap + children` 模式，仅容量扩大
@@ -1816,4 +1829,232 @@ logger.export_csv("experiments/exp_epsilon_1000.csv");
 
 ---
 
-*文档生成日期: 2026-05-13 | 基于 sul_plan.md / ALT-Index / ART / PGM-Index 文献*
+---
+
+## 第二部分：密文实现（SUL-cipher-index）
+
+---
+
+## 12. SUL-cipher-index 概述
+
+SUL-cipher-index 是 SUL-plain-index 的隐私保护版本。它在保留明文版本全部结构（GPL 学习层 + ART 冲突层）的基础上，对索引中的关键参数进行 Paillier 同态加密，使数据服务方（DSP）无法直接获知任何明文内容，同时通过一系列安全子协议（OSM、SIC、SPI）完成加密状态下的查询与插入。
+
+### 12.1 设计目标
+
+- **数据机密性**: 索引所有参数（坐标、z 值、键字节、GPL 模型参数、ART 键值、节点 ID）均以 Paillier 密文存储
+- **查询正确性**: 安全查询协议在密文上执行，得到与明文版本等价的查询结果
+- **双方模型**: 引入数据服务提供方（DSP）和数据访问提供方（DAP）两个逻辑角色，DSP 持有加密索引，DAP 持有私钥；双方通信在代码中以逻辑函数调用模拟，无需真实网络
+- **实现基础**: 加密组件使用 `ophelib::PaillierFast`；安全子协议在 `agreements/` 目录下实现
+
+### 12.2 与明文版本的关系
+
+| 方面 | SUL-plain-index | SUL-cipher-index |
+|------|----------------|-----------------|
+| 构建方式 | 明文批量构建 | 与明文相同，构建完成后对参数加密 |
+| 索引存储 | 明文参数 | Paillier 密文参数 |
+| 点查询 | 直接预测 + ART 遍历 | SQQP + SARTQ 安全协议 |
+| 范围查询 | 边界定位 + 候选过滤 | SHRQ 安全协议 |
+| 插入 | 直接写入 | 安全点查询定位 + 密文插入 |
+| 安全保证 | 无 | 半诚实模型下 DSP 无法得到明文 |
+
+---
+
+## 13. 加密参数与双方架构
+
+### 13.1 双方角色定义
+
+| 角色 | 英文 | 持有内容 | 能力 |
+|------|------|---------|------|
+| 数据服务提供方 | Data Service Provider (DSP) | 加密索引、同态运算能力 | 可做密文加法/乘标量，不能解密 |
+| 数据访问提供方 | Data Access Provider (DAP) | Paillier 私钥 | 可解密，不持有索引明文 |
+
+> **实现说明**: DSP 与 DAP 之间的通信在代码中以逻辑函数调用模拟，不需要真实网络或线程。加密组件使用 `ophelib::PaillierFast`（`ophelib` 库）。
+
+### 13.2 加密参数表
+
+| 结构 | 加密字段 | 说明 |
+|------|---------|------|
+| 数据点 | 坐标 `dimensions[]` | 每个维度坐标单独加密 |
+| | Z 曲线值 `z_value` | 一维编码值加密 |
+| | 键字节数组 `key_bytes[]` | 每个字节单独加密 |
+| GPL 节点 | 键值 `key` | 节点最小键值密文 |
+| | 斜率 `slope` | 线性模型斜率密文 |
+| | 截距 `intercept` | 线性模型截距密文 |
+| | 节点 ID | 每个子节点 ID 加密 |
+| ART 节点 | 键值数组 `keys[]` | 每个键字节加密 |
+| | 节点 ID | 每个节点 ID 加密 |
+
+所有参数均使用 Paillier 加密；Paillier 满足加法同态：
+- **密文加法** = 明文加法：`Enc(a) × Enc(b) = Enc(a + b)`
+- **密文乘标量** = 明文标量乘：`Enc(a)^k = Enc(a × k)`
+
+---
+
+## 14. 密文构建流程
+
+密文构建过程与明文版本完全相同，差异仅在最后一步：对所有关键参数逐一调用 `paillier.encrypt()` 加密后存回原字段。
+
+```
+Step 1–5: 与 SUL-plain-index 批量构建相同（Z 曲线 → 排序 → GPL → 数据分配 → ART 构建）
+  ↓
+Step 6: 参数加密（DSP 使用公钥对所有字段加密）
+  for each DataPoint:
+      encrypt dimensions[], z_value, key_bytes[]
+  for each GPLInnerNode / GPLLeafNode:
+      encrypt key, slope, intercept, child IDs
+  for each ARTNode:
+      encrypt keys[], node IDs
+```
+
+> **精度处理**: `slope` 和 `intercept` 为浮点数，加密前乘以缩放因子 `scale = 100000` 转为整数再加密，与 OSM 协议中的约定一致。
+
+---
+
+## 15. 基础安全子协议
+
+所有子协议实现位于 `sul-index/agreements/agreements/` 目录下。DSP 与 DAP 双方的通信以逻辑函数调用模拟。
+
+### 15.1 OSM 协议（Oblivious Scalar Multiplication）
+
+**功能**: 实现两个 Paillier 密文的乘法，即安全计算 `Enc(x × y)`。
+
+**代价**: 1 次 DAP 解密 + 1 次 DSP 加密（模拟通信开销）。
+
+**接口** (`agreements/OSM.h`):
+```cpp
+// 输入: Enc(x) 和 Enc(y)；返回 Enc(x × y × scale^2)
+// scale = 100000，用于浮点参数整数化
+Ciphertext OSMrun(Integer x_int, Integer y_int, PaillierFast& paillier);
+```
+
+**在 GPL 预测中的使用**: 对于密文输入 `v`、加密斜率 `slope`、加密截距 `intercept`：
+```
+pos = OSMrun(v, slope) × Enc(intercept)
+    = Enc(v × slope) × Enc(intercept)   // Paillier 密文乘法 = 明文加法
+    = Enc(v × slope + intercept)
+```
+
+> 计划中记为 `SM(v, slope) × Enc(intercept)` 即此公式；`SM` 与 `OSM` 为同一协议。
+
+### 15.2 SIC 协议（Secure Integer Comparison）
+
+**功能**: 安全比较两个密文大小，返回 `Enc(1)` 若 `X ≤ Y`，否则返回 `Enc(0)`。
+
+**接口** (`agreements/SIC.h`):
+```cpp
+// 返回 Integer（值为 0 或 1 的解密结果）
+Integer SICrun(Ciphertext X, Ciphertext Y, PaillierFast& paillier);
+```
+
+**内部流程**:
+1. DSP：将 X、Y 各乘以 2，Y 再加 1；以随机位 F 决定比较方向，计算差值 Z = X-Y 或 Y-X
+2. DAP：解密 Z，判断符号（与 n/2 对比），根据方向位 F 返回 `Enc(1)` 或 `Enc(0)`
+
+### 15.3 SPI 协议（Secure Point-In-range）
+
+**功能**: 判断一个数据点是否落在加密范围查询 Q 内。逐维度对点的坐标与查询边界 `ql`、`qr` 执行 SIC 比较，所有维度均满足 `ql[d] ≤ coords[d] ≤ qr[d]` 时返回真。
+
+**接口** (`agreements/SPI.h`，待实现):
+```cpp
+// 对数据点各维度依次调用 SICrun 判断是否在范围 [ql, qr] 内
+// 返回 1 表示在范围内，0 表示不在
+Integer SPIrun(const EncDataPoint& point,
+               const EncQueryRange& Q,
+               PaillierFast& paillier);
+```
+
+### 15.4 噪声机制
+
+**加噪声**: 对密文乘以随机数 `r`：`Enc(x) → Enc(x × r) = Enc(x)^r`（Paillier 标量乘）。
+
+**去噪声**: 乘以随机数的模逆元 `r^{-1}`：`Enc(x × r) → Enc(x × r × r^{-1}) = Enc(x)`。
+
+同一子树下的所有密文加相同噪声 `r`，确保 DAP 解密时只能看到相对差值（零位即目标），无法定位绝对位置。
+
+---
+
+## 16. 安全查询
+
+### 16.1 GPL 安全点查询（SQQP）
+
+**输入**: 加密键值 `Enc(v)`，加密 GPL 索引
+
+**输出**: 叶子节点位置 `pos`（加密形式）
+
+**流程**（当前节点非叶子时循环）:
+
+**DSP**:
+1. 计算 `pos = OSMrun(v, slope) × Enc(intercept)` = `Enc(v × slope + intercept)`
+2. 对该节点所有子树 ID 与 `pos` 同态相减，生成加密标记向量 `u`（仅目标位置为 `Enc(0)`）
+3. 对 `u` 和各子树加同一随机噪声（同一子树共享噪声），打包发送给 DAP
+
+**DAP**:
+4. 解密标记向量 `u`
+5. 将 `u` 中为 0 的位置在新向量 `U` 中置为 `Enc(1)`，对应子树加入候选集 T
+6. 将 `U` 和 T 返回给 DSP
+
+**DSP**:
+7. 用 `U` 与各子树噪声同态乘后求和，得到目标噪声 `r`
+8. 对 T 去噪 `r` 得到目标子树
+9. 继续递归，直至到达叶子节点，返回叶子位置 `pos`
+
+### 16.2 ART 安全点查询（SARTQ）
+
+**输入**: 加密键字节序列 `key[]`，ART 根节点
+
+**输出**: 叶子节点位置 `pos`（或 null 表示未找到）
+
+**流程**（当前节点非叶子时循环）:
+
+**DSP**:
+1. 从键字节序列取当前深度的加密键值 `k`
+2. 对节点键值数组每个 `K` 与 `k` 同态相减，生成加密标记向量 `m`（目标位置为 `Enc(0)`）
+3. 对 `m` 和各子树加随机噪声，打包发送给 DAP
+
+**DAP**:
+4. 解密 `m`，初始化 `flag = false`
+5. 将 `m` 中为 0 的位置在 `M` 中置 `Enc(1)`，对应子树加入候选集 C，`flag = true`
+6. 若 `flag` 为 true，返回 (M, C)；否则返回 null
+
+**DSP**:
+7. 若收到非 null：用 `M` 与各子树噪声同态乘后求和得目标噪声 `r`，对 C 去噪得目标子树
+8. 若收到 null：返回 null（未找到）
+9. 继续递归至叶子节点，返回叶子位置
+
+### 16.3 安全范围查询（SHRQ）
+
+**输入**: 加密范围查询 Q（包含两边界点 `ql`/`qr`、对应键字节序列 `vl`/`vr` 及一维键值 `kl`/`kr`），加密索引
+
+**输出**: 结果集 R
+
+**流程**:
+
+**DSP**:
+1. 对 `kl` 和 `kr` 执行 SQQP，得到起始叶子位置 `lefpos` 和 `rigpos`
+2. 再次用 OSM 计算两边界叶子内数据点的预测位置 `lefid` 和 `rigid`
+
+**DAP**:
+3. 解密 `lefpos`、`lefid`、`rigpos`、`rigid`
+4. 将 `(lefpos, rigpos)` 范围内的**中间叶子**数据点全部加入候选点集，ART 根节点加入候选节点集
+5. 对 `lefpos` 叶子：将槽位 `[lefid, 末尾]` 中的存在数据点（结合 bitmap）加入候选点集；用 SIC 比较该叶子 ART 覆盖的最大键值与 `lefid`，若返回 0 则将 ART 根节点（最小键值更新为 `lefid`）加入候选节点集
+6. 对 `rigpos` 叶子：将槽位 `[0, rigid-1]` 中的存在数据点加入候选点集；用 SIC 比较 `rigid` 与该叶子 ART 覆盖的最小键值，若返回 0 则将 ART 根节点（最大键值更新为 `rigid`）加入候选节点集
+7. 遍历候选节点集，对每个 ART 根节点执行 SARTQ（边界键字节），确定 ART 叶子范围 `[low, upp]`，将该范围内所有数据点加入候选点集
+8. 对候选点集的所有点执行 SPI 协议，判断是否在查询 Q 内，得到最终结果集 R
+
+---
+
+## 17. 安全插入
+
+安全插入复用安全查询逻辑，流程如下：
+
+1. **定位**: 对插入点执行 **SQQP**（GPL 安全点查询），定位目标叶子节点及预测槽位
+2. **写入学习层**: DAP 解密槽位后，若预测位置为空，直接将加密数据点写入对应槽位，更新加密 bitmap
+3. **回退 ART**: 若预测位置已被占用，对该叶子的 ART 根节点执行 **SARTQ**（ART 安全点查询）
+   - 若 DAP 返回 `flag = false`（未找到匹配）：在当前内部节点下方插入新的加密叶子节点
+     - 内部节点有空位：直接写入空位
+     - 内部节点已满：扩容（Node4 → Node16 → Node48 → Node256），写入新节点
+   - 若 `flag = true`：键已存在，视为重复插入，根据策略更新或忽略
+
+---
+
+*文档版本: v1.4 | 更新日期: 2026-05-18 | 基于 sul_plan.md / SUL-index_plan.md / ALT-Index / ART / PGM-Index 文献*

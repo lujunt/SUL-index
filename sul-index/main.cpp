@@ -194,7 +194,10 @@ int main(int argc, char** argv) {
     size_t rq_returned_sum = 0;
     size_t rq_gt_sum = 0;
     size_t rq_tp_sum = 0;
-    auto rq_t0 = std::chrono::steady_clock::now();
+    // 顺序累计：墙钟总耗时；并行模拟累计：(墙钟 - ART总耗时 + ART最大耗时)
+    double rq_wall_us_sum = 0.0;
+    double rq_parallel_us_sum = 0.0;
+    int64_t rq_art_count_sum = 0;
 
     const int32_t N_RQ = 50;
     std::uniform_real_distribution<double> u01(0.0, 1.0);
@@ -216,7 +219,14 @@ int main(int argc, char** argv) {
             sul::scale_unit_double_to_int32(y_hi)
         };
 
-        auto idx_res = index.range_query(lo, hi);
+        sul::RangeQueryStats stats;
+        auto rq_one_t0 = std::chrono::steady_clock::now();
+        auto idx_res = index.range_query(lo, hi, &stats);
+        auto rq_one_t1 = std::chrono::steady_clock::now();
+        double wall_us = std::chrono::duration<double, std::micro>(rq_one_t1 - rq_one_t0).count();
+        // 并行模拟：把ART顺序累加耗时替换为ART最大单次耗时
+        double parallel_us = wall_us - stats.art_total_us + stats.art_max_us;
+
         auto gt_res = scanner.range_query(lo, hi, 2);
 
         std::unordered_set<uint64_t> truth_set;
@@ -234,12 +244,13 @@ int main(int argc, char** argv) {
         }
 
         rq_total++;
-        rq_returned_sum += idx_res.size();
-        rq_gt_sum += gt_res.size();
-        rq_tp_sum += tp;
+        rq_returned_sum    += idx_res.size();
+        rq_gt_sum          += gt_res.size();
+        rq_tp_sum          += tp;
+        rq_wall_us_sum     += wall_us;
+        rq_parallel_us_sum += parallel_us;
+        rq_art_count_sum   += stats.art_count;
     }
-    auto rq_t1 = std::chrono::steady_clock::now();
-    double rq_ms = std::chrono::duration<double, std::milli>(rq_t1 - rq_t0).count();
 
     double recall = rq_gt_sum > 0 ? (double)rq_tp_sum / (double)rq_gt_sum : 1.0;
     double precision = rq_returned_sum > 0 ? (double)rq_tp_sum / (double)rq_returned_sum : 1.0;
@@ -251,7 +262,12 @@ int main(int argc, char** argv) {
     std::cout << "[rq] recall=" << recall
               << " precision=" << precision
               << "\n";
-    std::cout << "[rq] avg latency = " << (rq_ms * 1000.0 / rq_total) << " us\n";
+    std::cout << "[rq] avg ART ops per query = "
+              << (static_cast<double>(rq_art_count_sum) / rq_total) << "\n";
+    std::cout << "[rq] avg latency (sequential) = "
+              << (rq_wall_us_sum / rq_total) << " us\n";
+    std::cout << "[rq] avg latency (ART并行模拟) = "
+              << (rq_parallel_us_sum / rq_total) << " us\n";
 
     // ============= 插入测试 =============
     // 测试目标：覆盖三种插入场景
