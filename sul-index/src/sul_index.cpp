@@ -305,6 +305,29 @@ size_t SULPlainIndex::art_total_expand_48_to_256() const {
     return total;
 }
 
+// 序列化反序列化：从外部注入 GPL 骨架
+// 注：仅保留 inner/leaf 结构字段，data_slots 全部置空（密文版查询不会用到指针）
+void SULPlainIndex::restore_skeleton(std::vector<std::vector<GPLInnerNode>> inner_in,
+                                      std::vector<GPLLeafNode>               leaf_in) {
+    all_points_.clear();
+    inserted_points_.clear();
+    inner_layers_ = std::move(inner_in);
+    leaf_nodes_   = std::move(leaf_in);
+
+    // 槽位指针在加载场景下不持有 plain DataPoint，统一置空
+    for (auto& leaf : leaf_nodes_) {
+        leaf.data_slots.assign(leaf.slot_count, nullptr);
+        leaf.art_root = nullptr;
+    }
+
+    // 加载场景下 ART 树骨架未保存：每个叶子挂一个空 ARTTree，保证 art_trees_ 与 leaves 同长
+    const int32_t kl = config_.key_len();
+    art_trees_.clear();
+    art_trees_.reserve(leaf_nodes_.size());
+    for (size_t i = 0; i < leaf_nodes_.size(); ++i)
+        art_trees_.emplace_back(std::make_unique<ARTTree>(kl));
+}
+
 // 单点插入：
 // 1) 编码坐标 → z值 + key_bytes
 // 2) 用GPL多层模型定位叶子

@@ -23,6 +23,7 @@ set(SUL_SOURCES
     src/sul_index.cpp
     src/util/csv_loader.cpp
     src/util/query_loader.cpp
+    src/util/experiment_recorder.cpp
 )
 add_library(sul_index STATIC ${SUL_SOURCES})
 
@@ -32,6 +33,11 @@ target_link_libraries(sul_demo PRIVATE sul_index)
 # 查询窗口生成器：从数据集 CSV 生成 5 个不同比例的查询文件
 add_executable(sul_query_gen main_query_gen.cpp)
 target_link_libraries(sul_query_gen PRIVATE sul_index)
+
+# 数据集划分工具：把 full csv 切成 train_csv + insert_csv（90/10 默认），
+# 支持基于 Z-order 桶的分层抽样（依赖 sul_index 的 ZOrderEncoder）
+add_executable(sul_split main_split.cpp)
+target_link_libraries(sul_split PRIVATE sul_index)
 
 # ============================================================================
 # 第二部分：密文索引（依赖 ophelib + NTL + GMP）
@@ -52,6 +58,7 @@ if(BUILD_CIPHER)
         src/cipher/crypto_context.cpp
         src/cipher/enc_art_tree.cpp
         src/cipher/sul_cipher_index.cpp
+        src/cipher/sul_cipher_serde.cpp
         agreements/agreements/OSM.cpp
         agreements/agreements/SIC.cpp
         agreements/agreements/SPI.cpp
@@ -72,4 +79,16 @@ if(BUILD_CIPHER)
     # 明文 vs 密文对比 demo（同一查询、双索引、逐项比对）
     add_executable(sul_compare_demo main_compare.cpp)
     target_link_libraries(sul_compare_demo PRIVATE sul_cipher_index)
+
+    # 序列化 / 反序列化 demo：build → save → load → query 比对
+    add_executable(sul_serde_demo main_serde_demo.cpp)
+    target_link_libraries(sul_serde_demo PRIVATE sul_cipher_index)
+
+    # 场景实验 demo：按读/写比执行 2000 操作
+    add_executable(sul_workload main_workload.cpp)
+    target_link_libraries(sul_workload PRIVATE sul_cipher_index)
+
+    # 更新对比 demo：按 ul% 批量插入并对比更新后查询
+    add_executable(sul_update main_update.cpp)
+    target_link_libraries(sul_update PRIVATE sul_cipher_index)
 endif()

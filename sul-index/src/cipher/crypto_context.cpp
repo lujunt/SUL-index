@@ -21,6 +21,17 @@ CryptoContext::CryptoContext(int key_size) {
     global_enc_one  = *enc_one_;
 }
 
+CryptoContext::CryptoContext(int /*key_size*/, const ophelib::KeyPair& kp) {
+    // PaillierFast(KeyPair) 内部解析 pub/priv 并完成预计算
+    paillier_ = std::make_unique<ophelib::PaillierFast>(kp);
+
+    enc_zero_ = std::make_unique<ophelib::Ciphertext>(paillier_->encrypt(ophelib::Integer(0)));
+    enc_one_  = std::make_unique<ophelib::Ciphertext>(paillier_->encrypt(ophelib::Integer(1)));
+
+    global_enc_zero = *enc_zero_;
+    global_enc_one  = *enc_one_;
+}
+
 ophelib::Ciphertext CryptoContext::encrypt_i64(int64_t v) const {
     return paillier_->encrypt(ophelib::Integer(static_cast<long>(v)));
 }

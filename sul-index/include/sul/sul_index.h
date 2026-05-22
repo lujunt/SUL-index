@@ -74,6 +74,14 @@ public:
     // 加密版查询时需要使用 locate_leaf 与槽位预测（同源逻辑，避免重复实现）
     int32_t locate_leaf_for_cipher(uint64_t z_value) const { return locate_leaf(z_value); }
 
+    // 序列化用：注入骨架（结构 + 线性模型字段），不重建 DataPoint/ART 数据
+    //   - inner_in: 每层 inner 节点
+    //   - leaf_in:  leaf 节点结构字段（key/slope/intercept/slot_count/filled/occupied
+    //               /seg_start/seg_end），data_slots 在密文版查询不会用到
+    // 调用后索引进入 "loaded skeleton 模式"，仅支持密文版查询走 SQQP 路径
+    void restore_skeleton(std::vector<std::vector<GPLInnerNode>> inner_in,
+                          std::vector<GPLLeafNode>               leaf_in);
+
 private:
     IndexConfig config_;
     ZOrderEncoder encoder_;

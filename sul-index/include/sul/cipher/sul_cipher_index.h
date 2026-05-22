@@ -7,6 +7,8 @@
 #include "sul/z_order.h"
 
 #include <memory>
+#include <string>
+#include <utility>
 #include <vector>
 
 namespace sul::cipher {
@@ -34,18 +36,38 @@ public:
 
     void bulk_load(std::vector<DataPoint> points);
 
+    // 查询耗时拆分（微秒）
+    struct QueryStats {
+        double learning_us = 0.0;  // GPL/SQQP + 学习层叶子槽位扫描
+        double art_us      = 0.0;  // ART/SARTQ + 候选合并 + SPI 过滤
+        bool   hit_learning = false;
+        bool   hit_art      = false;
+    };
+
     // 安全点查询：返回加密数据点指针，not-found 返回 nullptr
     EncDataPoint* point_query(const int32_t* coords);
+
+    // 带耗时拆分的点查询；stats 为空指针等价于 point_query
+    EncDataPoint* point_query_with_stats(const int32_t* coords,
+                                         QueryStats* stats);
 
     // 安全范围查询：返回所有命中加密数据点
     std::vector<EncDataPoint*> range_query(const int32_t* low,
                                            const int32_t* high);
 
+    // 带耗时拆分的范围查询
+    std::vector<EncDataPoint*> range_query_with_stats(const int32_t* low,
+                                                      const int32_t* high,
+                                                      QueryStats* stats);
+
     // 安全插入：先 SQQP 定位，再走学习层或 ART 层
     InsertResult insert(const int32_t* coords);
 
     // 只读统计
-    size_t total_points()           const { return plain_.total_points(); }
+    // 加载模式没有 plain DataPoint，回落到 cipher pool 大小
+    size_t total_points()           const {
+        return is_loaded_ ? enc_points_.size() : plain_.total_points();
+    }
     size_t leaf_count()             const { return enc_leaf_nodes_.size(); }
     size_t inner_layer_count()      const { return enc_inner_layers_.size(); }
     size_t learning_layer_filled()  const { return plain_.learning_layer_filled(); }
@@ -55,6 +77,20 @@ public:
 
     // 暴露明文索引（仅供调试 / 真值验证用，生产环境应隐藏）
     const SULPlainIndex& plain() const { return plain_; }
+
+    // ========================================================================
+    // 序列化 / 反序列化
+    // ========================================================================
+    // 二进制落盘：包含 IndexConfig + Paillier KeyPair + GPL 骨架 + 全部密文
+    void save_to_file(const std::string& path) const;
+
+    // 从文件加载：返回 (CryptoContext, SULCipherIndex)
+    // 加载后索引为 "查询只读"，调用 insert 会返回 Failed
+    static std::pair<std::unique_ptr<CryptoContext>,
+                     std::unique_ptr<SULCipherIndex>>
+        load_from_file(const std::string& path);
+
+    bool is_loaded() const { return is_loaded_; }
 
 private:
     IndexConfig    config_;
@@ -69,6 +105,9 @@ private:
 
     std::vector<std::unique_ptr<EncDataPoint>> enc_points_;
     std::vector<std::unique_ptr<EncDataPoint>> enc_inserted_points_;
+
+    // 反序列化加载后置为 true：insert 直接拒绝（plain 骨架不持有 DataPoint）
+    bool is_loaded_ = false;
 
     void encrypt_data_point(const DataPoint& src, EncDataPoint& dst);
     void build_encrypted_mirror();
@@ -107,6 +146,15 @@ public:
     size_t node_count() const { return inner_count_; }
     size_t leaf_count() const { return leaf_count_; }
     void*  root()       const { return root_; }
+
+    // ====== 序列化辅助 ======
+    // 反序列化用：清空当前树（销毁 root_ 子树并归零计数）
+    void clear();
+
+    // 反序列化用：外部构造好 root 子树后，整体安装到本树
+    void set_root(void* root, size_t inner_count, size_t leaf_count) {
+        root_ = root; inner_count_ = inner_count; leaf_count_ = leaf_count;
+    }
 
 private:
     void*   root_;

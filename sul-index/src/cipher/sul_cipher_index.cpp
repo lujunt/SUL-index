@@ -5,6 +5,7 @@
 #include "SPI.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <random>
@@ -205,10 +206,26 @@ EncDataPoint* SULCipherIndex::sartq(int32_t art_tree_idx,
 // 安全点查询：SQQP → 学习层槽位 SIC 比较 → 未命中走 SARTQ
 // ============================================================================
 EncDataPoint* SULCipherIndex::point_query(const int32_t* coords) {
-    uint64_t z = encoder_.encode(coords);
+    return point_query_with_stats(coords, nullptr);
+}
 
+EncDataPoint* SULCipherIndex::point_query_with_stats(const int32_t* coords,
+                                                     QueryStats* stats) {
+    using clk = std::chrono::steady_clock;
+    auto t_start = clk::now();
+
+    uint64_t z = encoder_.encode(coords);
     int32_t leaf_idx = sqqp(z);
-    if (leaf_idx < 0) return nullptr;
+    if (leaf_idx < 0) {
+        if (stats) {
+            stats->learning_us = std::chrono::duration<double, std::micro>(
+                                     clk::now() - t_start).count();
+            stats->art_us = 0.0;
+            stats->hit_learning = false;
+            stats->hit_art = false;
+        }
+        return nullptr;
+    }
 
     const GPLLeafNode& pl_leaf = plain_.leaf_nodes()[leaf_idx];
     EncGPLLeafNode& enc_leaf = enc_leaf_nodes_[leaf_idx];
@@ -222,13 +239,21 @@ EncDataPoint* SULCipherIndex::point_query(const int32_t* coords) {
     Ciphertext enc_z = crypto_.encrypt_i64(static_cast<int64_t>(z));
     for (int32_t p = lo; p <= hi; ++p) {
         if (!enc_leaf.occupied[p] || !enc_leaf.data_slots[p]) continue;
-        // SIC 双向比较实现等值：z<=dp.z && dp.z<=z
         Integer le = SICrun(enc_z, enc_leaf.data_slots[p]->z_value, crypto_.paillier());
         Integer ge = SICrun(enc_leaf.data_slots[p]->z_value, enc_z, crypto_.paillier());
         if (le == 1 && ge == 1) {
+            if (stats) {
+                stats->learning_us = std::chrono::duration<double, std::micro>(
+                                         clk::now() - t_start).count();
+                stats->art_us = 0.0;
+                stats->hit_learning = true;
+                stats->hit_art = false;
+            }
             return enc_leaf.data_slots[p];
         }
     }
+
+    auto t_after_learning = clk::now();
 
     // ART 层
     uint8_t kb[MAX_KEY_BYTES] = {};
@@ -237,7 +262,17 @@ EncDataPoint* SULCipherIndex::point_query(const int32_t* coords) {
     enc_kb.reserve(config_.key_len());
     for (int32_t i = 0; i < config_.key_len(); ++i)
         enc_kb.push_back(crypto_.encrypt_i64(kb[i]));
-    return sartq(enc_leaf.art_tree_idx, enc_kb, kb);
+    EncDataPoint* hit = sartq(enc_leaf.art_tree_idx, enc_kb, kb);
+
+    if (stats) {
+        stats->learning_us = std::chrono::duration<double, std::micro>(
+                                 t_after_learning - t_start).count();
+        stats->art_us      = std::chrono::duration<double, std::micro>(
+                                 clk::now() - t_after_learning).count();
+        stats->hit_learning = false;
+        stats->hit_art      = (hit != nullptr);
+    }
+    return hit;
 }
 
 // ============================================================================
@@ -245,8 +280,20 @@ EncDataPoint* SULCipherIndex::point_query(const int32_t* coords) {
 // ============================================================================
 std::vector<EncDataPoint*> SULCipherIndex::range_query(const int32_t* low,
                                                        const int32_t* high) {
+    return range_query_with_stats(low, high, nullptr);
+}
+
+std::vector<EncDataPoint*> SULCipherIndex::range_query_with_stats(
+        const int32_t* low, const int32_t* high, QueryStats* stats) {
+    using clk = std::chrono::steady_clock;
+    auto t_start = clk::now();
+
     std::vector<EncDataPoint*> result;
-    if (enc_leaf_nodes_.empty()) return result;
+    if (enc_leaf_nodes_.empty()) {
+        if (stats) { stats->learning_us = stats->art_us = 0.0;
+                     stats->hit_learning = stats->hit_art = false; }
+        return result;
+    }
 
     const int32_t kl = config_.key_len();
     uint64_t z_lo = encoder_.encode(low);
@@ -260,8 +307,18 @@ std::vector<EncDataPoint*> SULCipherIndex::range_query(const int32_t* low,
 
     int32_t left  = sqqp(z_lo);
     int32_t right = sqqp(z_hi);
-    if (left < 0 || right < 0) return result;
+    if (left < 0 || right < 0) {
+        if (stats) {
+            stats->learning_us = std::chrono::duration<double, std::micro>(
+                                     clk::now() - t_start).count();
+            stats->art_us = 0.0;
+            stats->hit_learning = stats->hit_art = false;
+        }
+        return result;
+    }
     if (left > right) std::swap(left, right);
+
+    auto t_after_learning = clk::now();
 
     const GPLLeafNode& pl_left  = plain_.leaf_nodes()[left];
     const GPLLeafNode& pl_right = plain_.leaf_nodes()[right];
@@ -329,6 +386,15 @@ std::vector<EncDataPoint*> SULCipherIndex::range_query(const int32_t* low,
         if (SPIrun(edp->dimensions, enc_ql, enc_qr, crypto_.paillier()) == 1)
             result.push_back(edp);
     }
+
+    if (stats) {
+        stats->learning_us = std::chrono::duration<double, std::micro>(
+                                 t_after_learning - t_start).count();
+        stats->art_us      = std::chrono::duration<double, std::micro>(
+                                 clk::now() - t_after_learning).count();
+        stats->hit_learning = false;
+        stats->hit_art      = !result.empty();
+    }
     return result;
 }
 
@@ -337,6 +403,8 @@ std::vector<EncDataPoint*> SULCipherIndex::range_query(const int32_t* low,
 // ============================================================================
 InsertResult SULCipherIndex::insert(const int32_t* coords) {
     if (enc_leaf_nodes_.empty()) return InsertResult::Failed;
+    // 反序列化加载后没有持有 plain DataPoint 数据，无法支持插入
+    if (is_loaded_) return InsertResult::Failed;
 
     // 在 plain_.insert 之前记录 orig_id：明文版用 total_points() 作 ID
     // 必须在 plain_.insert 之前取值，使两侧 ID 完全一致

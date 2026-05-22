@@ -16,6 +16,9 @@ public:
 
     explicit CryptoContext(int key_size = 1024);
 
+    // 从已有 Paillier 密钥对构造（反序列化路径）
+    CryptoContext(int key_size, const ophelib::KeyPair& kp);
+
     ophelib::PaillierFast& paillier() { return *paillier_; }
     const ophelib::PaillierFast& paillier() const { return *paillier_; }
 

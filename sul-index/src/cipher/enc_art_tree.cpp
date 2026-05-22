@@ -72,6 +72,13 @@ EncARTTree::~EncARTTree() {
     if (root_) destroy(root_, 0);
 }
 
+void EncARTTree::clear() {
+    if (root_) destroy(root_, 0);
+    root_ = nullptr;
+    inner_count_ = 0;
+    leaf_count_ = 0;
+}
+
 void EncARTTree::destroy(void* node, int32_t depth) {
     if (!node) return;
     ARTNodeType t = type_of(node);
