@@ -32,17 +32,18 @@
 7. [构建流程设计](#7-构建流程设计)
 8. [性能分析与调优](#8-性能分析与调优)
 9. [序列化与反序列化](#9-序列化与反序列化)
-10. [实验记录与分析](#10-实验记录与分析)
-11. [参考文献](#11-参考文献)
+10. [参考文献](#10-参考文献)
 
 ### 第二部分：密文实现（SUL-cipher-index）
 
-12. [SUL-cipher-index 概述](#12-sul-cipher-index-概述)
-13. [加密参数与双方架构](#13-加密参数与双方架构)
-14. [密文构建流程](#14-密文构建流程)
-15. [基础安全子协议](#15-基础安全子协议)
-16. [安全查询](#16-安全查询)
-17. [安全插入](#17-安全插入)
+11. [SUL-cipher-index 概述](#11-sul-cipher-index-概述)
+12. [加密参数与双方架构](#12-加密参数与双方架构)
+13. [密文构建流程](#13-密文构建流程)
+14. [基础安全子协议](#14-基础安全子协议)
+15. [安全查询](#15-安全查询)
+16. [安全插入](#16-安全插入)
+17. [密文实验设置](#17-密文实验设置)
+18. [密文实验记录](#18-密文实验记录)
 
 ---
 
@@ -1585,215 +1586,12 @@ if (SULPlainSerializer::validate("index_v1.sul")) {
 
 > 以 N=1,000,000, D=2, ε=1000, M≈1000, A≈5000, L≈20000 为例，总体文件约 25-30 MB。
 
----
-
-## 10. 实验记录与分析
-
-实验记录模块用于系统化采集索引在构建、查询各阶段的性能指标和结构统计信息，便于横向对比不同参数配置下的表现。
-
-### 10.1 记录维度
-
-#### 10.1.1 构建阶段指标
-
-| 指标 | 类型 | 说明 |
-|------|------|------|
-| `build_wall_time_ms` | double | 构建总耗时（挂钟时间） |
-| `build_cpu_time_ms` | double | 构建 CPU 时间 |
-| `sort_time_ms` | double | 排序阶段耗时 |
-| `gpl_train_time_ms` | double | GPL 模型训练耗时 |
-| `art_build_time_ms` | double | ART 层构建耗时 |
-| `total_data_count` | size_t | 总数据点数 |
-| `gpl_segment_count` | size_t | GPL 段数量 |
-| `art_node_count` | size_t | ART 节点总数 |
-| `art_inner_node_count` | size_t | ART 内部节点数（Node4 + Node16） |
-| `art_leaf_count` | size_t | ART 叶子节点数 |
-| `learning_layer_bytes` | size_t | 学习层内存占用 (bytes) |
-| `art_layer_bytes` | size_t | ART 层内存占用 (bytes) |
-| `total_index_bytes` | size_t | 索引总内存占用 (bytes) |
-| `bytes_per_key` | double | 平均每键字节数 |
-| `epsilon` | uint32_t | 误差界参数 |
-
-#### 10.1.2 查询阶段指标
-
-| 指标 | 类型 | 说明 |
-|------|------|------|
-| `query_type` | enum | 点查询 / 范围查询 |
-| `total_queries` | size_t | 查询总数 |
-| `total_query_time_ns` | uint64_t | 总查询耗时 (ns) |
-| `avg_query_time_ns` | double | 平均查询耗时 (ns) |
-| `p50_latency_ns` | double | 中位数延迟 |
-| `p99_latency_ns` | double | P99 尾延迟 |
-| `learning_layer_hits` | size_t | 学习层命中次数 |
-| `art_layer_hits` | size_t | ART 层命中次数 |
-| `art_traversal_depth_avg` | double | ART 遍历平均深度 |
-| `recall` | double | 召回率（与暴力查找对比） |
-| `precision` | double | 精确率 |
-| `false_positive_count` | size_t | 假阳性数量 |
-| `false_negative_count` | size_t | 假阴性数量 |
-| `result_set_size_avg` | double | 平均结果集大小（范围查询） |
-
-### 10.2 数据结构
-
-```cpp
-// 构建阶段实验记录
-struct BuildRecord {
-    // 时间指标
-    double build_wall_time_ms    = 0.0;
-    double build_cpu_time_ms     = 0.0;
-    double sort_time_ms          = 0.0;
-    double gpl_train_time_ms     = 0.0;
-    double art_build_time_ms     = 0.0;
-
-    // 规模指标
-    size_t total_data_count      = 0;
-    size_t gpl_segment_count     = 0;
-    size_t art_node_count        = 0;
-    size_t art_inner_node_count  = 0;
-    size_t art_leaf_count        = 0;
-
-    // 内存指标
-    size_t learning_layer_bytes  = 0;
-    size_t art_layer_bytes       = 0;
-    size_t total_index_bytes     = 0;
-    double bytes_per_key         = 0.0;
-
-    // 参数
-    uint32_t epsilon             = 0;
-    uint32_t dim_count           = 0;
-};
-
-// 查询阶段实验记录
-struct QueryRecord {
-    enum QueryType { POINT, RANGE };
-    QueryType query_type;
-
-    // 时间指标
-    size_t   total_queries       = 0;
-    uint64_t total_query_time_ns = 0;
-    double   avg_query_time_ns   = 0.0;
-    double   p50_latency_ns      = 0.0;
-    double   p99_latency_ns      = 0.0;
-
-    // 命中分布
-    size_t   learning_layer_hits = 0;
-    size_t   art_layer_hits      = 0;
-    double   art_traversal_depth_avg = 0.0;
-
-    // 正确性
-    double   recall              = 0.0;
-    double   precision           = 0.0;
-    size_t   false_positive_count = 0;
-    size_t   false_negative_count = 0;
-
-    // 结果集
-    double   result_set_size_avg = 0.0;
-};
-
-// 完整实验记录
-struct ExperimentRecord {
-    std::string experiment_name;
-    std::string timestamp;
-    BuildRecord build;
-    QueryRecord  point_query;
-    QueryRecord  range_query;
-};
-```
-
-### 10.3 记录器实现
-
-```cpp
-class ExperimentLogger {
-public:
-    // 开始计时
-    void start_timer();
-    // 结束计时，返回耗时（毫秒）
-    double stop_timer_ms();
-
-    // 记录构建指标
-    void record_build(const SULPlainIndex& index);
-
-    // 运行查询基准测试并记录
-    void run_point_query_benchmark(
-        SULPlainIndex& index,
-        const BruteForceScanner& scanner,
-        const std::vector<std::vector<int32_t>>& queries);
-
-    void run_range_query_benchmark(
-        SULPlainIndex& index,
-        const BruteForceScanner& scanner,
-        const std::vector<RangeQuery>& queries);
-
-    // 导出为 CSV 文件
-    void export_csv(const std::string& filepath) const;
-
-    // 打印摘要到控制台
-    void print_summary() const;
-
-private:
-    ExperimentRecord record_;
-    std::chrono::steady_clock::time_point timer_start_;
-
-    // 从索引提取统计信息
-    BuildRecord collect_build_stats(const SULPlainIndex& index);
-
-    // 计算延迟分位数
-    static double percentile(std::vector<uint64_t> latencies, double p);
-};
-```
-
-### 10.4 实验记录 CSV 导出格式
-
-```csv
-experiment_name,timestamp,dim_count,epsilon,total_data_count,gpl_count,art_nodes,art_leaves,...
-build_wall_ms,sort_ms,gpl_train_ms,art_build_ms,index_bytes,bytes_per_key,...
-pq_total,pq_avg_ns,pq_p50_ns,pq_p99_ns,pq_learning_hits,pq_art_hits,pq_recall,pq_precision,...
-rq_total,rq_avg_ns,rq_p50_ns,rq_p99_ns,rq_learning_hits,rq_art_hits,rq_recall,rq_precision,...
-```
-
-每行代表一次完整实验（一组参数配置），便于导入 Python (pandas) 或 Excel 进行可视化分析。
-
-### 10.5 使用示例
-
-```cpp
-// === 实验流程 ===
-ExperimentLogger logger("exp_epsilon_1000");
-BruteForceScanner scanner(data_points);
-
-// 1. 构建索引并计时
-logger.start_timer();
-SULPlainIndex index;
-index.build(data_points, /*epsilon=*/1000);
-double build_time = logger.stop_timer_ms();
-logger.record_build(index);
-
-// 2. 生成查询负载
-auto point_queries = generate_random_point_queries(10000, dim_count);
-auto range_queries = generate_random_range_queries(1000, dim_count, selectivity);
-
-// 3. 运行点查询基准
-logger.run_point_query_benchmark(index, scanner, point_queries);
-
-// 4. 运行范围查询基准
-logger.run_range_query_benchmark(index, scanner, range_queries);
-
-// 5. 输出结果
-logger.print_summary();
-logger.export_csv("experiments/exp_epsilon_1000.csv");
-```
-
-### 10.6 建议实验矩阵
-
-| 实验维度 | 变量 | 建议取值 |
-|---------|------|---------|
-| 数据规模 N | total_data_count | 10^4, 10^5, 10^6, 10^7 |
-| 维度 D | dim_count | 2, 3, 4 |
-| 误差界 ε | epsilon | 16, 64, 256, 1000, N/100, N/1000 |
-| 数据分布 | 分布类型 | uniform, normal, zipfian |
-| 范围选择性 | selectivity | 0.01%, 0.1%, 1%, 10% |
+> **说明**: 明文实验流水线及记录格式已被密文版本取代，统一在第二部分 §17/§18 中描述（保留少量明文计时仅作为密文实验的对照基准）。
 
 ---
 
-## 11. 参考文献
+
+## 10. 参考文献
 
 [1] Y. Yang, F. Wang, M. Lei, P. Zhang, and D. Feng, "ALT-index: A Hybrid Learned Index for Concurrent Memory Database Systems," 2024.
 
@@ -1835,18 +1633,18 @@ logger.export_csv("experiments/exp_epsilon_1000.csv");
 
 ---
 
-## 12. SUL-cipher-index 概述
+## 11. SUL-cipher-index 概述
 
 SUL-cipher-index 是 SUL-plain-index 的隐私保护版本。它在保留明文版本全部结构（GPL 学习层 + ART 冲突层）的基础上，对索引中的关键参数进行 Paillier 同态加密，使数据服务方（DSP）无法直接获知任何明文内容，同时通过一系列安全子协议（OSM、SIC、SPI）完成加密状态下的查询与插入。
 
-### 12.1 设计目标
+### 11.1 设计目标
 
 - **数据机密性**: 索引所有参数（坐标、z 值、键字节、GPL 模型参数、ART 键值、节点 ID）均以 Paillier 密文存储
 - **查询正确性**: 安全查询协议在密文上执行，得到与明文版本等价的查询结果
 - **双方模型**: 引入数据服务提供方（DSP）和数据访问提供方（DAP）两个逻辑角色，DSP 持有加密索引，DAP 持有私钥；双方通信在代码中以逻辑函数调用模拟，无需真实网络
 - **实现基础**: 加密组件使用 `ophelib::PaillierFast`；安全子协议在 `agreements/` 目录下实现
 
-### 12.2 与明文版本的关系
+### 11.2 与明文版本的关系
 
 | 方面 | SUL-plain-index | SUL-cipher-index |
 |------|----------------|-----------------|
@@ -1859,9 +1657,9 @@ SUL-cipher-index 是 SUL-plain-index 的隐私保护版本。它在保留明文�
 
 ---
 
-## 13. 加密参数与双方架构
+## 12. 加密参数与双方架构
 
-### 13.1 双方角色定义
+### 12.1 双方角色定义
 
 | 角色 | 英文 | 持有内容 | 能力 |
 |------|------|---------|------|
@@ -1870,7 +1668,7 @@ SUL-cipher-index 是 SUL-plain-index 的隐私保护版本。它在保留明文�
 
 > **实现说明**: DSP 与 DAP 之间的通信在代码中以逻辑函数调用模拟，不需要真实网络或线程。加密组件使用 `ophelib::PaillierFast`（`ophelib` 库）。
 
-### 13.2 加密参数表
+### 12.2 加密参数表
 
 | 结构 | 加密字段 | 说明 |
 |------|---------|------|
@@ -1890,7 +1688,7 @@ SUL-cipher-index 是 SUL-plain-index 的隐私保护版本。它在保留明文�
 
 ---
 
-## 14. 密文构建流程
+## 13. 密文构建流程
 
 密文构建过程与明文版本完全相同，差异仅在最后一步：对所有关键参数逐一调用 `paillier.encrypt()` 加密后存回原字段。
 
@@ -1910,11 +1708,11 @@ Step 6: 参数加密（DSP 使用公钥对所有字段加密）
 
 ---
 
-## 15. 基础安全子协议
+## 14. 基础安全子协议
 
 所有子协议实现位于 `sul-index/agreements/agreements/` 目录下。DSP 与 DAP 双方的通信以逻辑函数调用模拟。
 
-### 15.1 OSM 协议（Oblivious Scalar Multiplication）
+### 14.1 OSM 协议（Oblivious Scalar Multiplication）
 
 **功能**: 实现两个 Paillier 密文的乘法，即安全计算 `Enc(x × y)`。
 
@@ -1936,7 +1734,7 @@ pos = OSMrun(v, slope) × Enc(intercept)
 
 > 计划中记为 `SM(v, slope) × Enc(intercept)` 即此公式；`SM` 与 `OSM` 为同一协议。
 
-### 15.2 SIC 协议（Secure Integer Comparison）
+### 14.2 SIC 协议（Secure Integer Comparison）
 
 **功能**: 安全比较两个密文大小，返回 `Enc(1)` 若 `X ≤ Y`，否则返回 `Enc(0)`。
 
@@ -1950,7 +1748,7 @@ Integer SICrun(Ciphertext X, Ciphertext Y, PaillierFast& paillier);
 1. DSP：将 X、Y 各乘以 2，Y 再加 1；以随机位 F 决定比较方向，计算差值 Z = X-Y 或 Y-X
 2. DAP：解密 Z，判断符号（与 n/2 对比），根据方向位 F 返回 `Enc(1)` 或 `Enc(0)`
 
-### 15.3 SPI 协议（Secure Point-In-range）
+### 14.3 SPI 协议（Secure Point-In-range）
 
 **功能**: 判断一个数据点是否落在加密范围查询 Q 内。逐维度对点的坐标与查询边界 `ql`、`qr` 执行 SIC 比较，所有维度均满足 `ql[d] ≤ coords[d] ≤ qr[d]` 时返回真。
 
@@ -1963,7 +1761,7 @@ Integer SPIrun(const EncDataPoint& point,
                PaillierFast& paillier);
 ```
 
-### 15.4 噪声机制
+### 14.4 噪声机制
 
 **加噪声**: 对密文乘以随机数 `r`：`Enc(x) → Enc(x × r) = Enc(x)^r`（Paillier 标量乘）。
 
@@ -1973,9 +1771,9 @@ Integer SPIrun(const EncDataPoint& point,
 
 ---
 
-## 16. 安全查询
+## 15. 安全查询
 
-### 16.1 GPL 安全点查询（SQQP）
+### 15.1 GPL 安全点查询（SQQP）
 
 **输入**: 加密键值 `Enc(v)`，加密 GPL 索引
 
@@ -1998,7 +1796,7 @@ Integer SPIrun(const EncDataPoint& point,
 8. 对 T 去噪 `r` 得到目标子树
 9. 继续递归，直至到达叶子节点，返回叶子位置 `pos`
 
-### 16.2 ART 安全点查询（SARTQ）
+### 15.2 ART 安全点查询（SARTQ）
 
 **输入**: 加密键字节序列 `key[]`，ART 根节点
 
@@ -2021,7 +1819,7 @@ Integer SPIrun(const EncDataPoint& point,
 8. 若收到 null：返回 null（未找到）
 9. 继续递归至叶子节点，返回叶子位置
 
-### 16.3 安全范围查询（SHRQ）
+### 15.3 安全范围查询（SHRQ）
 
 **输入**: 加密范围查询 Q（包含两边界点 `ql`/`qr`、对应键字节序列 `vl`/`vr` 及一维键值 `kl`/`kr`），加密索引
 
@@ -2043,7 +1841,7 @@ Integer SPIrun(const EncDataPoint& point,
 
 ---
 
-## 17. 安全插入
+## 16. 安全插入
 
 安全插入复用安全查询逻辑，流程如下：
 
@@ -2057,4 +1855,183 @@ Integer SPIrun(const EncDataPoint& point,
 
 ---
 
-*文档版本: v1.4 | 更新日期: 2026-05-18 | 基于 sul_plan.md / SUL-index_plan.md / ALT-Index / ART / PGM-Index 文献*
+## 17. 密文实验设置
+
+本章定义 SUL-cipher-index 的全部实验配置。**所有实验在密文索引上执行**；明文索引仅作为正确性真值与延迟下界对照。
+
+### 17.1 实验参数（参数实验：范围查询）
+
+| 参数 | 符号 | 候选取值 | 默认值 | 确定方式 |
+|------|------|----------|--------|----------|
+| 数据集大小 | N | 20k / 40k / 60k / 80k / 100k | 20k | 由 dataset CSV 决定 |
+| 数据维度 | d | 2 / 3 / 4 / 5 / 6 | 2 | 由 dataset CSV 决定 |
+| Paillier 密钥长度 | K | 1024 / 2048 / 3072 / 4096 | 1024 | 命令行 `[K]` 参数 |
+| 学习层误差界 | err | 16 / 64 / 256 / 1000 / N/100 / N/1000 | N/1000 | 命令行 `[err]` 参数（≤0 取默认） |
+| 查询窗口大小 | sl | 0.25% / 0.5% / 1% / 2% / 4% | 0.25% | 由 query CSV 决定 |
+
+**做法**：每次只变化一个参数，其余取默认值。
+
+### 17.2 场景实验（点查询）
+
+初始化阶段从原始数据集均匀采样 90% 用于 `bulk_load`，剩余 10% 作为写操作来源。固定执行 2000 次读写组合：
+
+| 场景 | 读次数 | 写次数 |
+|------|--------|--------|
+| 全读 | 2000 | 0 |
+| 多读少写 (80/20) | 1600 | 400 |
+| 读写均衡 (50/50) | 1000 | 1000 |
+| 少读多写 (20/80) | 400 | 1600 |
+| 全写 | 0 | 2000 |
+
+**注意**：场景实验中尽量保证写操作不触发学习层重训练（通过控制插入点 z 值落在已有叶子覆盖范围内）。
+
+### 17.3 重训练实验（热写）
+
+**预留方案**：在降维后的一维 z 空间截取连续段。
+
+具体步骤：
+1. 全量预处理：对原始数据全部计算 z-value
+2. 全局排序：对 z-value 升序排序
+3. 截取连续段：直接截取排序数组中一段连续的数据作为"热写预留集"
+4. 初始化与执行：用剩余数据 `bulk_load` 构建索引，再集中插入预留集
+
+### 17.4 对比实验
+
+- **范围查询对比**：默认参数下与基线索引对比（参数实验已覆盖延迟与召回率）
+- **更新对比**：变化更新率 `ul`（占原数据集比例，候选 0.25%/0.5%/1%/2%/4%），分别记录更新延迟与更新后查询延迟
+
+### 17.5 数据划分工具
+
+由 `sul-index/main_split.cpp` 实现（第二步交付）：
+```
+sul_split <full_csv> <out_train_csv> <out_insert_csv> [train_ratio=0.9] [seed=42]
+```
+均匀采样划分，保证训练集与插入集不重叠且可复现。
+
+---
+
+## 18. 密文实验记录
+
+### 18.1 记录目录与文件命名
+
+所有实验记录写入 `sul-index/record/`。文件名以参数标记区分，**一组参数 = 一个文件**，便于横向对比：
+
+| 实验类型 | 文件名模板 | 写入时机 |
+|---------|-----------|---------|
+| 构建 | `build_K{K}_err{err}_dim{d}_N{N}.csv` | `bulk_load` 完成后 |
+| 范围查询 | `rangequery_K{K}_err{err}_dim{d}_N{N}_sl{sl}.csv` | 批量范围查询结束后 |
+| 场景 | `workload_K{K}_err{err}_dim{d}_N{N}_R{r}W{w}.csv` | 场景实验结束后 |
+| 更新对比 | `update_K{K}_err{err}_dim{d}_N{N}_ul{ul}.csv` | 更新对比结束后 |
+
+`{K}` 与 `{err}` 为命令行实际取值；`{sl}` 取查询窗口百分比的整数标记（如 `0p25` 表 0.25%）；`{r}/{w}` 为读/写比例的整数百分号（如 `R80W20`）。
+
+### 18.2 build.csv 字段
+
+| 列 | 类型 | 含义 |
+|----|------|------|
+| `timestamp` | string | ISO 时间戳 |
+| `K` | int | Paillier 密钥位数 |
+| `err` | int | 学习层误差界 |
+| `dim` | int | 维度 |
+| `N` | int | 数据点总数 |
+| `build_ms` | double | 构建总耗时（含加密镜像） |
+| `keygen_ms` | double | Paillier 密钥生成耗时 |
+| `index_bytes_total` | size_t | 索引总存储开销 (bytes) |
+| `learning_bytes` | size_t | 学习层（GPL 内部 + 叶子）密文存储 |
+| `art_bytes` | size_t | ART 层密文存储 |
+| `learning_height` | int | 学习层层数（包括叶子层） |
+| `art_height_max` | int | ART 层最大深度（= `key_len()`） |
+| `node_total` | size_t | 节点总数（GPL + ART） |
+| `inner_total` | size_t | 内部节点总数（GPL 内部 + ART Node4/16/48/256） |
+| `leaf_total` | size_t | 叶子节点总数（GPL 叶子 + ART 叶子） |
+| `gpl_leaf_count` | size_t | GPL 叶子数 |
+| `art_node_count` | size_t | ART 节点数 |
+
+### 18.3 rangequery.csv 字段
+
+| 列 | 类型 | 含义 |
+|----|------|------|
+| `timestamp` | string | ISO 时间戳 |
+| `K` / `err` / `dim` / `N` | — | 参数 |
+| `sl_pct` | double | 查询窗口大小百分比 |
+| `query_count` | int | 范围查询总条数 |
+| `total_ms` | double | 总耗时 |
+| `avg_ms` | double | 平均延迟 |
+| `learning_ms_avg` | double | 学习层（SQQP）平均耗时 |
+| `art_ms_avg` | double | ART 层（SARTQ + 候选合并）平均耗时 |
+| `returned_avg` | double | 返回点数平均值 |
+| `recall` | double | 召回率（与 BruteForceScanner 真值对比） |
+| `precision` | double | 精确率 |
+
+### 18.4 workload.csv 字段（场景实验）
+
+| 列 | 类型 | 含义 |
+|----|------|------|
+| `timestamp` | string | ISO 时间戳 |
+| `K` / `err` / `dim` / `N` | — | 参数 |
+| `read_pct` / `write_pct` | int | 读写比例 |
+| `ops_total` | int | 总操作数（2000） |
+| `total_ms` | double | 端到端总耗时 |
+| `throughput_total` | double | 总吞吐量 ops/s |
+| `throughput_read` | double | 读吞吐量 ops/s |
+| `throughput_write` | double | 写吞吐量 ops/s |
+| `query_latency_avg_ms` | double | 平均查询延迟（学习层 + ART 层之和） |
+| `learning_query_avg_ms` | double | 学习层平均查询时间 |
+| `art_query_avg_ms` | double | ART 层平均查询时间 |
+| `update_latency_avg_ms` | double | 平均更新延迟（定位 + 更新） |
+| `locate_avg_ms` | double | 平均定位时间（SQQP） |
+| `update_avg_ms` | double | 平均更新写入时间 |
+
+### 18.5 update.csv 字段（更新对比）
+
+| 列 | 类型 | 含义 |
+|----|------|------|
+| `timestamp` | string | ISO 时间戳 |
+| `K` / `err` / `dim` / `N` | — | 参数 |
+| `ul_pct` | double | 更新率（占数据集百分比） |
+| `update_count` | int | 实际执行更新次数 |
+| `update_total_ms` | double | 更新总耗时 |
+| `update_avg_ms` | double | 单次更新平均耗时 |
+| `post_query_avg_ms` | double | 更新后范围查询平均延迟 |
+| `post_recall` | double | 更新后查询召回率 |
+
+### 18.6 记录器接口
+
+由 `sul-index/include/sul/util/experiment_recorder.h` 实现：
+
+```cpp
+namespace sul::util {
+
+struct ExpParams {
+    int K, err, dim, N;
+    std::string extra;  // sl_pct / R{r}W{w} / ul_pct
+};
+
+class ExperimentRecorder {
+public:
+    static std::string build_path(const std::string& kind, const ExpParams& p);
+
+    // 追加一行；首次写入自动写表头
+    static void append_row(const std::string& path,
+                           const std::vector<std::string>& header,
+                           const std::vector<std::string>& row);
+};
+
+} // namespace sul::util
+```
+
+### 18.7 使用示例
+
+```cpp
+ExpParams p{ 1024, 20, 2, 20000, "" };
+auto path = ExperimentRecorder::build_path("build", p);
+// → sul-index/record/build_K1024_err20_dim2_N20000.csv
+
+ExperimentRecorder::append_row(path,
+    {"timestamp","K","err","dim","N","build_ms",/*…*/},
+    {now_iso(), "1024","20","2","20000","123.4", /*…*/});
+```
+
+---
+
+*文档版本: v1.5 | 更新日期: 2026-05-22 | 增加密文实验设置与记录章节*

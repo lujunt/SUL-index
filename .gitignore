@@ -26,6 +26,10 @@ compile_commands.json
 sul-index/agreements/agreements/sic
 sul-index/agreements/agreements/spi
 
+# 实验产物（可重新生成）：密文索引快照 + record CSV
+sul-index/indexes/
+sul-index/record/
+
 # OS noise
 .DS_Store
 Thumbs.db
