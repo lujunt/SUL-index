@@ -1,24 +1,29 @@
 // 明文 vs 密文 范围查询对比（数据集 + 查询文件 双 CSV 驱动）
 // 用法：./sul_compare_demo <dataset_csv> <query_csv>
-//        [paillier_key=1024] [n_inserts=5]
+//        [paillier_key=1024] [err=-1]
 //
 // 流程：
-//   1) 读 dataset 建明文/密文两套独立索引
-//   2) 读 query 文件，对每条 range_query 在两边各跑一次，对比 orig_id 集合
-//   3) 额外做点查询（随机抽 hit/miss 各半）+ 插入对比，保证综合一致性
+//   1) 构建：明文 bulk_load 现场构建；密文优先 load 已有 .scidx，
+//      否则 build + save_to_file + 重新 load，始终在反序列化后的实例上查询
+//      若走 build 路径，则写入 record/build_K{K}_err{err}_dim{d}_N{N}.csv
+//   2) 范围查询：对每条 range_query 在明文/密文各跑一次，对比 orig_id 集合；
+//      统一写入 record/rangequery_K{K}_err{err}_dim{d}_N{N}_sl{tag}.csv
 //
 // 退出码：0 = PASS（全部一致），1 = FAIL
 
 #include "sul/cipher/sul_cipher_index.h"
 #include "sul/sul_index.h"
 #include "sul/util/csv_loader.h"
+#include "sul/util/experiment_recorder.h"
 #include "sul/util/query_loader.h"
 
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
+#include <filesystem>
 #include <iostream>
+#include <memory>
 #include <random>
 #include <set>
 #include <stdexcept>
@@ -27,6 +32,8 @@
 
 using namespace sul;
 using namespace sul::cipher;
+using sul::util::ExperimentRecorder;
+using sul::util::ExpParams;
 
 namespace {
 
@@ -43,25 +50,37 @@ void print_stats(const char* label, const CompareStats& s) {
               << "\n";
 }
 
+// 从查询文件名解析选择率（uniform_20000_0.25.csv → 0.25）
+double parse_sl_pct_from_path(const std::string& path) {
+    auto slash = path.find_last_of('/');
+    std::string base = (slash == std::string::npos) ? path : path.substr(slash + 1);
+    auto dot = base.find_last_of('.');
+    if (dot != std::string::npos) base.resize(dot);
+    auto us = base.find_last_of('_');
+    if (us == std::string::npos) return 0.0;
+    try { return std::stod(base.substr(us + 1)); }
+    catch (...) { return 0.0; }
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
     if (argc < 3) {
         std::cerr << "Usage: " << argv[0]
                   << " <dataset_csv> <query_csv>"
-                  << " [paillier_key=1024] [n_inserts=5]\n";
+                  << " [paillier_key=1024] [err=-1]\n";
         return 1;
     }
     const std::string dataset_path = argv[1];
     const std::string query_path   = argv[2];
-    const int32_t KSZ    = (argc > 3) ? std::atoi(argv[3]) : 1024;
-    const int32_t N_INS  = (argc > 4) ? std::atoi(argv[4]) : 5;
+    const int32_t KSZ     = (argc > 3) ? std::atoi(argv[3]) : 1024;
+    const int32_t err_cli = (argc > 4) ? std::atoi(argv[4]) : -1;
 
     std::cout << "=== plain vs cipher 对比 (dataset+query CSV) ===\n";
     std::cout << "  dataset = " << dataset_path << "\n";
     std::cout << "  query   = " << query_path << "\n";
     std::cout << "  paillier_key = " << KSZ
-              << "  n_inserts = " << N_INS << "\n";
+              << "  err(cli) = " << err_cli << " (<=0 → auto N/1000)\n";
 
     util::CsvLoadResult ds;
     util::QueryFile     qf;
@@ -86,7 +105,7 @@ int main(int argc, char** argv) {
     auto data_cipher = ds.data;
     IndexConfig cfg;
     cfg.dim_count   = DIM;
-    cfg.error_bound = std::max<int32_t>(8, N / 1000);
+    cfg.error_bound = (err_cli > 0) ? err_cli : std::max<int32_t>(8, N / 1000);
 
     // ------ Phase 1: 构建 ------
     print_header("Phase 1: 构建索引");
@@ -100,64 +119,127 @@ int main(int argc, char** argv) {
               << "  learning=" << plain.learning_layer_filled()
               << "  art=" << plain.art_layer_points() << "\n";
 
-    t0 = std::chrono::steady_clock::now();
-    CryptoContext crypto(KSZ);
-    t1 = std::chrono::steady_clock::now();
-    std::cout << "  Paillier keygen: "
-              << std::chrono::duration<double, std::milli>(t1 - t0).count() << " ms\n";
+    namespace fs = std::filesystem;
+    const std::string scidx_path = "indexes/index_K" + std::to_string(KSZ)
+                                 + "_err" + std::to_string(cfg.error_bound)
+                                 + "_dim" + std::to_string(DIM)
+                                 + "_N"   + std::to_string(N)
+                                 + ".scidx";
+    fs::create_directories("indexes");
 
-    t0 = std::chrono::steady_clock::now();
-    SULCipherIndex cipher(cfg, crypto);
-    cipher.bulk_load(std::move(data_cipher));
-    t1 = std::chrono::steady_clock::now();
-    std::cout << "  cipher bulk_load: "
-              << std::chrono::duration<double, std::milli>(t1 - t0).count() << " ms"
-              << "  leaf=" << cipher.leaf_count()
+    std::unique_ptr<CryptoContext>  crypto_holder;
+    std::unique_ptr<SULCipherIndex> cipher_holder;
+    bool   did_build      = false;
+    double keygen_ms      = 0.0;
+    double cipher_build_ms = 0.0;
+    double save_ms        = 0.0;
+    double load_ms        = 0.0;
+
+    if (fs::exists(scidx_path)) {
+        // 路径 A：直接反序列化已有索引
+        std::cout << "  密文索引: 命中 " << scidx_path << " → load\n";
+        t0 = std::chrono::steady_clock::now();
+        auto pr = SULCipherIndex::load_from_file(scidx_path);
+        crypto_holder = std::move(pr.first);
+        cipher_holder = std::move(pr.second);
+        t1 = std::chrono::steady_clock::now();
+        load_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+        std::cout << "  load_from_file: " << load_ms << " ms\n";
+    } else {
+        // 路径 B：构建 → 序列化 → 释放 → 反序列化（保证查询在 loaded 实例上执行）
+        std::cout << "  密文索引: 未找到 " << scidx_path
+                  << " → build + save + reload\n";
+        did_build = true;
+
+        t0 = std::chrono::steady_clock::now();
+        auto crypto_tmp = std::make_unique<CryptoContext>(KSZ);
+        t1 = std::chrono::steady_clock::now();
+        keygen_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+        std::cout << "  Paillier keygen: " << keygen_ms << " ms\n";
+
+        t0 = std::chrono::steady_clock::now();
+        auto cipher_tmp = std::make_unique<SULCipherIndex>(cfg, *crypto_tmp);
+        cipher_tmp->bulk_load(std::move(data_cipher));
+        t1 = std::chrono::steady_clock::now();
+        cipher_build_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+        std::cout << "  cipher bulk_load: " << cipher_build_ms << " ms\n";
+
+        t0 = std::chrono::steady_clock::now();
+        cipher_tmp->save_to_file(scidx_path);
+        t1 = std::chrono::steady_clock::now();
+        save_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+        std::cout << "  save_to_file: " << scidx_path << " ("
+                  << save_ms << " ms)\n";
+
+        // 释放构建路径下的对象（顺序：cipher 先于 crypto）
+        cipher_tmp.reset();
+        crypto_tmp.reset();
+
+        t0 = std::chrono::steady_clock::now();
+        auto pr = SULCipherIndex::load_from_file(scidx_path);
+        crypto_holder = std::move(pr.first);
+        cipher_holder = std::move(pr.second);
+        t1 = std::chrono::steady_clock::now();
+        load_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+        std::cout << "  load_from_file: " << load_ms << " ms\n";
+    }
+    SULCipherIndex& cipher = *cipher_holder;
+
+    size_t file_bytes = 0;
+    {
+        std::error_code ec;
+        auto sz = fs::file_size(scidx_path, ec);
+        if (!ec) file_bytes = sz;
+    }
+
+    std::cout << "  cipher: leaf=" << cipher.leaf_count()
               << "  learning=" << cipher.learning_layer_filled()
-              << "  art=" << cipher.art_layer_points() << "\n";
+              << "  art=" << cipher.art_layer_points()
+              << "  is_loaded=" << (cipher.is_loaded() ? "true" : "false") << "\n";
 
-    bool struct_ok = (plain.leaf_count() == cipher.leaf_count()
-                   && plain.learning_layer_filled() == cipher.learning_layer_filled()
-                   && plain.art_layer_points() == cipher.art_layer_points());
-    std::cout << "  结构规模一致? " << (struct_ok ? "YES" : "NO") << "\n";
+    // loaded 模式下 plain 骨架不保存 ART 叶子，art_layer_points()/learning_layer_filled()
+    // 委托返回 0；只比较 leaf_count 即可
+    bool struct_ok = cipher.is_loaded()
+        ? (plain.leaf_count() == cipher.leaf_count())
+        : (plain.leaf_count() == cipher.leaf_count()
+        && plain.learning_layer_filled() == cipher.learning_layer_filled()
+        && plain.art_layer_points() == cipher.art_layer_points());
+    std::cout << "  结构规模一致? " << (struct_ok ? "YES" : "NO")
+              << (cipher.is_loaded() ? " (loaded 模式仅比较 leaf_count)" : "") << "\n";
 
-    // ------ Phase 2: 点查询（随机 hit/miss 各 20） ------
-    print_header("Phase 2: 点查询对比（20 hit + 20 miss）");
-    const auto& all_points = plain.all_points();
-    std::mt19937 qgen(123);
-    std::uniform_int_distribution<int32_t> coord_dist(0, 65535);
-    std::uniform_int_distribution<size_t>  idx_dist(0, all_points.size() - 1);
+    const double sl_pct = parse_sl_pct_from_path(query_path);
+    ExpParams exp_params{ KSZ, cfg.error_bound, DIM, N, "" };
 
-    CompareStats pq_stats;
-    auto run_pq = [&](const int32_t* coords) {
-        DataPoint*    p_hit = plain.point_query(coords);
-        EncDataPoint* c_hit = cipher.point_query(coords);
-        bool ok;
-        if (!p_hit && !c_hit)    ok = true;
-        else if (p_hit && c_hit) ok = (p_hit->orig_id == c_hit->orig_id);
-        else                     ok = false;
-        pq_stats.incr(ok);
-    };
-    for (int i = 0; i < 20; ++i) {
-        const auto& probe = all_points[idx_dist(qgen)];
-        int32_t coords[MAX_DIMS] = {};
-        for (int32_t d = 0; d < DIM; ++d) coords[d] = probe.dimensions[d];
-        run_pq(coords);
+    // 仅构建路径下记录 record/build（load 路径无构建数据）
+    if (did_build) {
+        fs::create_directories("record");
+        std::string build_csv = ExperimentRecorder::build_path("build", exp_params);
+        ExperimentRecorder::append_row(build_csv,
+            {"timestamp","K","err","dim","N",
+             "build_ms","keygen_ms","save_ms","load_ms","file_bytes"},
+            {ExperimentRecorder::now_iso(),
+             std::to_string(KSZ),
+             std::to_string(cfg.error_bound),
+             std::to_string(DIM),
+             std::to_string(N),
+             ExperimentRecorder::ftoa(cipher_build_ms),
+             ExperimentRecorder::ftoa(keygen_ms),
+             ExperimentRecorder::ftoa(save_ms),
+             ExperimentRecorder::ftoa(load_ms),
+             std::to_string(file_bytes)});
+        std::cout << "  → record: " << build_csv << "\n";
     }
-    for (int i = 0; i < 20; ++i) {
-        int32_t coords[MAX_DIMS] = {};
-        for (int32_t d = 0; d < DIM; ++d) coords[d] = coord_dist(qgen);
-        run_pq(coords);
-    }
-    print_stats("point_query 一致", pq_stats);
 
-    // ------ Phase 3: 范围查询（来自查询文件） ------
-    print_header("Phase 3: 范围查询对比（来自查询文件）");
+    // ------ Phase 2: 范围查询（来自查询文件） ------
+    print_header("Phase 2: 范围查询对比（来自查询文件）");
     CompareStats rq_stats;
     size_t plain_total_returned  = 0;
     size_t cipher_total_returned = 0;
-    double plain_ms_total  = 0.0;
-    double cipher_ms_total = 0.0;
+    size_t intersect_total       = 0;
+    double plain_ms_total        = 0.0;
+    double cipher_ms_total       = 0.0;
+    double cipher_learn_us_sum   = 0.0;
+    double cipher_art_us_sum     = 0.0;
 
     for (size_t qi = 0; qi < qf.queries.size(); ++qi) {
         const auto& q = qf.queries[qi];
@@ -167,10 +249,13 @@ int main(int argc, char** argv) {
         auto pt1 = std::chrono::steady_clock::now();
         plain_ms_total += std::chrono::duration<double, std::milli>(pt1 - pt0).count();
 
+        SULCipherIndex::QueryStats cst;
         auto ct0 = std::chrono::steady_clock::now();
-        auto c_res = cipher.range_query(q.lo.data(), q.hi.data());
+        auto c_res = cipher.range_query_with_stats(q.lo.data(), q.hi.data(), &cst);
         auto ct1 = std::chrono::steady_clock::now();
-        cipher_ms_total += std::chrono::duration<double, std::milli>(ct1 - ct0).count();
+        cipher_ms_total     += std::chrono::duration<double, std::milli>(ct1 - ct0).count();
+        cipher_learn_us_sum += cst.learning_us;
+        cipher_art_us_sum   += cst.art_us;
 
         plain_total_returned  += p_res.size();
         cipher_total_returned += c_res.size();
@@ -178,6 +263,9 @@ int main(int argc, char** argv) {
         std::set<int32_t> p_ids, c_ids;
         for (auto* p : p_res) p_ids.insert(p->orig_id);
         for (auto* p : c_res) c_ids.insert(p->orig_id);
+        size_t inter = 0;
+        for (int x : p_ids) if (c_ids.count(x)) ++inter;
+        intersect_total += inter;
         bool ok = (p_ids == c_ids);
         rq_stats.incr(ok);
         if (!ok) {
@@ -195,36 +283,57 @@ int main(int argc, char** argv) {
               << "  cipher=" << (NQ ? cipher_total_returned / NQ : 0) << "\n";
     std::cout << "  总耗时: plain=" << plain_ms_total << " ms"
               << "  cipher=" << cipher_ms_total << " ms\n";
-    std::cout << "  平均单查询: plain="
-              << (NQ ? plain_ms_total / static_cast<double>(NQ) : 0.0) << " ms/q"
-              << "  cipher="
-              << (NQ ? cipher_ms_total / static_cast<double>(NQ) : 0.0) << " ms/q\n";
+    const double plain_avg_ms  = NQ ? plain_ms_total  / static_cast<double>(NQ) : 0.0;
+    const double cipher_avg_ms = NQ ? cipher_ms_total / static_cast<double>(NQ) : 0.0;
+    const double cipher_learn_ms_avg =
+        NQ ? (cipher_learn_us_sum / 1000.0) / static_cast<double>(NQ) : 0.0;
+    const double cipher_art_ms_avg   =
+        NQ ? (cipher_art_us_sum   / 1000.0) / static_cast<double>(NQ) : 0.0;
+    std::cout << "  平均单查询: plain=" << plain_avg_ms << " ms/q"
+              << "  cipher=" << cipher_avg_ms << " ms/q\n"
+              << "  cipher 拆分: learning=" << cipher_learn_ms_avg << " ms/q"
+              << "  art=" << cipher_art_ms_avg << " ms/q\n";
 
-    // ------ Phase 4: 插入 ------
-    print_header("Phase 4: 插入对比");
-    CompareStats ins_stats, post_pq_stats;
-    for (int i = 0; i < N_INS; ++i) {
-        int32_t new_pt[MAX_DIMS] = {};
-        for (int32_t d = 0; d < DIM; ++d) new_pt[d] = coord_dist(qgen);
-        InsertResult pr = plain.insert(new_pt);
-        InsertResult cr = cipher.insert(new_pt);
-        bool ok = (pr == cr);
-        ins_stats.incr(ok);
+    const double recall    = plain_total_returned
+        ? static_cast<double>(intersect_total) / static_cast<double>(plain_total_returned)
+        : 1.0;
+    const double precision = cipher_total_returned
+        ? static_cast<double>(intersect_total) / static_cast<double>(cipher_total_returned)
+        : 1.0;
+    const double returned_avg =
+        NQ ? static_cast<double>(cipher_total_returned) / static_cast<double>(NQ) : 0.0;
 
-        DataPoint*    p_hit = plain.point_query(new_pt);
-        EncDataPoint* c_hit = cipher.point_query(new_pt);
-        bool post_ok = (p_hit && c_hit && p_hit->orig_id == c_hit->orig_id);
-        post_pq_stats.incr(post_ok);
+    {
+        fs::create_directories("record");
+        ExpParams pr = exp_params;
+        pr.extra = "_sl" + ExperimentRecorder::pct_tag(sl_pct);
+        std::string rq_csv = ExperimentRecorder::build_path("rangequery", pr);
+        ExperimentRecorder::append_row(rq_csv,
+            {"timestamp","K","err","dim","N","sl_pct",
+             "query_count","total_ms","avg_ms",
+             "learning_ms_avg","art_ms_avg",
+             "returned_avg","recall","precision"},
+            {ExperimentRecorder::now_iso(),
+             std::to_string(KSZ),
+             std::to_string(cfg.error_bound),
+             std::to_string(DIM),
+             std::to_string(N),
+             ExperimentRecorder::ftoa(sl_pct),
+             std::to_string(NQ),
+             ExperimentRecorder::ftoa(cipher_ms_total),
+             ExperimentRecorder::ftoa(cipher_avg_ms),
+             ExperimentRecorder::ftoa(cipher_learn_ms_avg),
+             ExperimentRecorder::ftoa(cipher_art_ms_avg),
+             ExperimentRecorder::ftoa(returned_avg),
+             ExperimentRecorder::ftoa(recall),
+             ExperimentRecorder::ftoa(precision)});
+        std::cout << "  → record: " << rq_csv << "\n";
     }
-    print_stats("insert 层级一致", ins_stats);
-    print_stats("插入后点查命中一致", post_pq_stats);
 
     // ------ 总结 ------
     print_header("总结");
-    int total   = pq_stats.total + rq_stats.total + ins_stats.total + post_pq_stats.total;
-    int matched = pq_stats.matched + rq_stats.matched + ins_stats.matched + post_pq_stats.matched;
-    std::cout << "  全部对比: " << matched << "/" << total << "\n";
-    bool all_pass = (matched == total) && struct_ok;
+    std::cout << "  range_query 对比: " << rq_stats.matched << "/" << rq_stats.total << "\n";
+    bool all_pass = (rq_stats.mismatched == 0) && struct_ok;
     std::cout << "  结论: "
               << (all_pass ? "PASS 密文索引与明文索引结果一致"
                            : "FAIL 存在不一致项")
