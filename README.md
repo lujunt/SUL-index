@@ -172,8 +172,34 @@ cmake --build build -j
 - 退出码：0 = PASS，1 = FAIL
 
 产出：
-- `record/build_K{K}_err{err}_dim{d}_N{N}.csv`（**仅 build 路径写入**；字段：`build_ms / keygen_ms / save_ms / load_ms / file_bytes`）
-- `record/rangequery_K{K}_err{err}_dim{d}_N{N}_sl{窗口比例}.csv`（每次都追加；字段：`total_ms / avg_ms / learning_ms_avg / art_ms_avg / returned_avg / recall / precision`）
+
+**① `record/build_K{K}_err{err}_dim{d}_N{N}.csv`** —— 仅 build 路径写入（命中已有 `.scidx` 时跳过）
+
+| 字段 | 含义 |
+|---|---|
+| `timestamp` | ISO-8601 时间戳（如 `2026-05-23T10:29:40`） |
+| `K` / `err` / `dim` / `N` | Paillier 位数 / 学习层误差界 ε / 维度 / 数据集点数 |
+| `build_ms` | 密文 `bulk_load` 耗时（含 GPL 学习层 + ART 冲突层完整构建） |
+| `keygen_ms` | Paillier 密钥生成耗时 |
+| `save_ms` | `save_to_file` 写盘耗时 |
+| `load_ms` | `load_from_file` 反序列化耗时 |
+| `file_bytes` | **磁盘真实大小**（v2 raw 二进制格式，K=1024/dim=2/N=20000 约 41.7 MiB） |
+| `file_bytes_kl1` | **等效存储口径**：假设 EncDataPoint pool 中 ART-key 仅压成 1 个密文/点时的折算大小，公式 `file_bytes − (key_len−1) × N × (4 + ⌈2K/8⌉)`；用于跨 dim 公平对比，**真实磁盘文件不变** |
+
+**② `record/rangequery_K{K}_err{err}_dim{d}_N{N}_sl{窗口比例}.csv`** —— 每次跑都追加一行
+
+| 字段 | 含义 |
+|---|---|
+| `timestamp / K / err / dim / N` | 同上 |
+| `sl_pct` | 范围查询窗口边长百分比（从查询文件名解析，如 `0.25` = 0.25%） |
+| `query_count` | 本次跑的查询条数 |
+| `total_ms` | 密文端所有范围查询合计耗时 |
+| `avg_ms` | 密文端单查询平均耗时（= `total_ms / query_count`） |
+| `learning_ms_avg` | 密文端单查询中 GPL 学习层耗时（SQQP 定位 + 槽位扫描） |
+| `art_ms_avg` | 密文端单查询中 ART 层耗时（SARTQ + SPI 过滤），`avg_ms ≈ learning_ms_avg + art_ms_avg` |
+| `returned_avg` | 单查询平均返回点数 |
+| `recall` | 密文∩明文 / 明文返回数（密文召回率，目标 = 1） |
+| `precision` | 密文∩明文 / 密文返回数（密文精确率，理论 = 1） |
 
 ### 步骤 3：场景实验（`sul_workload`）
 
@@ -209,7 +235,22 @@ cmake --build build -j
 | 少读多写 | 20  | `1024 -1 20  2000` |
 | 全写   | 0   | `1024 -1 0   2000` |
 
-产出：`record/workload_K{K}_err{err}_dim{d}_N{N}_R{r}W{w}.csv`（吞吐 + 学习 / ART 层耗时 + 定位 / 更新耗时；`learning_query_avg_ms` / `art_query_avg_ms` 现表示**点查询**两段耗时）
+产出：`record/workload_K{K}_err{err}_dim{d}_N{N}_R{r}W{w}.csv` —— 每次跑追加一行
+
+| 字段 | 含义 |
+|---|---|
+| `timestamp / K / err / dim / N` | 同步骤 2 |
+| `read_pct / write_pct` | 读 / 写操作占比（read_pct + write_pct = 100） |
+| `ops_total` | 总操作数（默认 2000） |
+| `total_ms` | 整个 workload 跑完的墙钟时间 |
+| `throughput_total` | 整体吞吐（ops/s） |
+| `throughput_read` / `throughput_write` | 仅按读 / 写操作各自数量与各自累计耗时算的吞吐 |
+| `query_latency_avg_ms` | 单**点查询**平均耗时（读操作） |
+| `learning_query_avg_ms` | 点查询中学习层耗时（**点查询**口径，非范围查询） |
+| `art_query_avg_ms` | 点查询中 ART 层耗时（**点查询**口径） |
+| `update_latency_avg_ms` | 单**插入**平均耗时（写操作） |
+| `locate_avg_ms` | 插入前定位（SQQP）平均耗时 |
+| `update_avg_ms` | 插入操作中实际写入（学习层 OSM 或 ART 树）的平均耗时 |
 
 ### 步骤 4：更新对比（`sul_update`）
 
@@ -235,8 +276,20 @@ cmake --build build -j
 - `ul_pct` 可选，更新率百分比，实际更新数 = `ceil(N_train × ul_pct / 100)`；候选 0.25 / 0.5 / 1 / 2 / 4（默认 0.25）
 
 产出：
-- `record/update_K{K}_err{err}_dim{d}_N{N}_ul{tag}.csv`（更新前后查询延迟 + 召回率）
-- `indexes/index_K{K}_err{err}_dim{d}_N{N}_ul{tag}_update.scidx` ← **更新后的索引快照**
+
+**① `record/update_K{K}_err{err}_dim{d}_N{N}_ul{tag}.csv`** —— 每次跑追加一行
+
+| 字段 | 含义 |
+|---|---|
+| `timestamp / K / err / dim / N` | 同步骤 2（`N` = train_csv 点数） |
+| `ul_pct` | 本次的更新率百分比（命令行 `ul_pct` 入参） |
+| `update_count` | 实际插入条数（= `ceil(N × ul_pct / 100)`） |
+| `update_total_ms` | 全部插入合计耗时 |
+| `update_avg_ms` | 单次插入平均耗时 |
+| `post_query_avg_ms` | 更新后在 `query_csv` 上跑范围查询的单查询平均耗时 |
+| `post_recall` | 更新后密文范围查询的召回率（目标 = 1） |
+
+**② `indexes/index_K{K}_err{err}_dim{d}_N{N}_ul{tag}_update.scidx`** —— 更新后的索引快照，可被 `SULCipherIndex::load_from_file` 直接加载继续查询，与步骤 2 中的 baseline `.scidx` 命名区分（多 `_ul{tag}_update` 后缀）。
 
 > 此 `_update.scidx` 与步骤 2 中的 baseline `.scidx` 区分；后续可用 `SULCipherIndex::load_from_file` 直接加载继续查询。
 
@@ -264,11 +317,13 @@ cmake --build build -j
 `.scidx` 二进制布局（见 `src/cipher/sul_cipher_serde.cpp` 顶注释）：
 
 ```
-Magic "SCIDX001"(8B) Version(u32) KeySize(u32) SCALE(i32)
+Magic "SCIDX002"(8B) Version(u32 = 2) KeySize(u32) SCALE(i32)
 IndexConfig(error_bound/max_layers/dim_count)
-Paillier KeyPair(n,g,p,q,a 以 hex 字符串保存)
+Paillier KeyPair(n,g,p,q,a，每个 Integer = u32 len + len 字节 big-endian raw)
 Plain skeleton: inner_layers + leaf_nodes 结构字段
 Encrypted state: EncDataPoint 池 + Enc GPL inner/leaf + Enc ART 树前序遍历
+                 每个 Ciphertext = u32 len + len 字节 big-endian raw 大数
+                 (v2 改用 raw 后单密文 K=1024 从 516B → 260B，整库腰斩)
 ```
 
 ---
@@ -332,14 +387,14 @@ Encrypted state: EncDataPoint 池 + Enc GPL inner/leaf + Enc ART 树前序遍历
   结论: PASS 密文索引与明文索引结果一致
 ```
 
-> 第 1 次跑会走 build + save + reload，多出 ~6 秒 keygen+构建，并额外打印 `→ record: record/build_K1024_err20_dim2_N20000.csv`（把 `build_ms / keygen_ms / save_ms / load_ms / file_bytes` 写入 build CSV）；之后再跑直接命中 load 路径，仅追加 rangequery CSV。
+> 第 1 次跑会走 build + save + reload，多出 ~6 秒 keygen+构建，并额外打印 `→ record: record/build_K1024_err20_dim2_N20000.csv`（把 `build_ms / keygen_ms / save_ms / load_ms / file_bytes / file_bytes_kl1` 写入 build CSV，并在 stdout 多打两行 `file_bytes` 与 `file_bytes_kl1` 的 MiB 等效值）；之后再跑直接命中 load 路径，仅追加 rangequery CSV。
 
 `sul_serde_demo` 输出片段（save → load → query 对比）：
 
 ```
 === Phase 3: 序列化到 indexes/ ===
   写出 = indexes/index_K1024_err20_dim2_N20000.scidx
-  耗时 = 175 ms      文件大小 = 86 MB
+  耗时 = 175 ms      文件大小 = 42 MB   # v2 raw 二进制；v1 hex 时同输入约 82 MB
 
 === Phase 4: 反序列化 ===
   耗时 = 175 ms      loaded leaf=101  is_loaded=true
