@@ -1,15 +1,16 @@
 // SUL-cipher-index 序列化 / 反序列化
 //
 // 文件格式（二进制，小端）：
-//   Magic        : "SCIDX001"  (8B)
-//   Version      : u32 = 1
+//   Magic        : "SCIDX002"  (8B)   v2: Integer 改为 raw big-endian 字节
+//   Version      : u32 = 2
 //   KeySize      : u32  Paillier 密钥位数
 //   SCALE        : i32  浮点缩放常量（应等于 CryptoContext::SCALE）
 //   IndexConfig  : error_bound(i32) max_layers(i32) dim_count(i32)
 //
 //   KeyPair      : key_size_bits(u64) a_bits(u64)
 //                  Integer pub.n / pub.g / priv.p / priv.q / priv.a
-//   每个 Integer 以 hex 字符串保存：u32 len + 'len' 字节
+//   每个 Integer 以 u32 len + 'len' 字节 big-endian 无符号大数保存
+//   （len == 0 表示数值 0；GMP 不写前导零，所以 len 通常略小于 ceil(2K/8)）
 //
 //   Plain Skeleton:
 //     n_layers(u32)
@@ -46,7 +47,7 @@
 //           AT_NODE*: 4/16/48/256 个槽
 //             present(u8); 若 present: plain_key(u8) key(ct) child_id(ct) 然后递归子节点
 //
-//   每个 Ciphertext 以 u32 len + len 字节 hex 字符串保存
+//   每个 Ciphertext 以 u32 len + len 字节 big-endian raw 大数保存（v2）
 
 #include "sul/cipher/sul_cipher_index.h"
 #include "sul/cipher/cipher_types.h"
@@ -85,32 +86,42 @@ T read_pod(std::istream& is) {
     return v;
 }
 
-void write_bytes(std::ostream& os, const std::string& s) {
-    uint32_t n = static_cast<uint32_t>(s.size());
-    write_pod(os, n);
-    if (n > 0) os.write(s.data(), n);
-}
-
-std::string read_bytes(std::istream& is) {
-    uint32_t n = read_pod<uint32_t>(is);
-    std::string s;
-    if (n > 0) {
-        s.resize(n);
-        is.read(s.data(), n);
-        if (!is) throw std::runtime_error("scidx: 读取字节段失败");
-    }
-    return s;
-}
-
+// Integer 落盘格式：u32 len + len 字节 big-endian 原始无符号大数
+// （len == 0 表示数值 0；GMP 不写前导零，所以 len 通常 < ceil(2K/8)）
+// 仅用于 Paillier 密文（恒非负，∈[0, n²)）与公私钥分量，故无符号位需求。
 void write_integer(std::ostream& os, const ophelib::Integer& v) {
-    std::string hex = v.to_string_(16);
-    write_bytes(os, hex);
+    const size_t bits = mpz_sizeinbase(v.get_mpz_t(), 2);
+    const size_t cap  = (bits + 7) / 8;
+    std::vector<uint8_t> buf(cap);
+    size_t count = 0;
+    if (cap > 0) {
+        mpz_export(buf.data(), &count,
+                   1 /*order: MSB first*/,
+                   1 /*size: 1 byte/word*/,
+                   0 /*endian: native (irrelevant for 1-byte words)*/,
+                   0 /*nails: 0*/,
+                   v.get_mpz_t());
+    }
+    // value=0 时 mpz_export 返回 count=0 且不写字节
+    uint32_t n = static_cast<uint32_t>(count);
+    write_pod(os, n);
+    if (n > 0) os.write(reinterpret_cast<const char*>(buf.data()), n);
 }
 
 ophelib::Integer read_integer(std::istream& is) {
-    std::string hex = read_bytes(is);
-    if (hex.empty()) return ophelib::Integer(0);
-    return ophelib::Integer(hex.c_str(), 16);
+    uint32_t n = read_pod<uint32_t>(is);
+    if (n == 0) return ophelib::Integer(0);
+    std::vector<uint8_t> buf(n);
+    is.read(reinterpret_cast<char*>(buf.data()), n);
+    if (!is) throw std::runtime_error("scidx: 读取 Integer 原始字节失败");
+    ophelib::Integer v;
+    mpz_import(v.get_mpz_t(), n,
+               1 /*order: MSB first*/,
+               1 /*size: 1 byte/word*/,
+               0 /*endian: native*/,
+               0 /*nails: 0*/,
+               buf.data());
+    return v;
 }
 
 void write_ct(std::ostream& os, const ophelib::Ciphertext& ct) {
@@ -307,8 +318,11 @@ void* load_art_subtree(std::istream& is, ArtLoadContext& ctx) {
     return n;
 }
 
-constexpr char kMagic[8] = {'S','C','I','D','X','0','0','1'};
-constexpr uint32_t kVersion = 1;
+// v1 (SCIDX001) 使用 hex 字符串保存 Integer；
+// v2 (SCIDX002) 改为 raw big-endian 字节（约腰斩文件体积）。
+// 旧 v1 文件读入时会在 magic 校验阶段被 load_from_file 直接 throw 拒绝。
+constexpr char kMagic[8] = {'S','C','I','D','X','0','0','2'};
+constexpr uint32_t kVersion = 2;
 
 } // namespace
 

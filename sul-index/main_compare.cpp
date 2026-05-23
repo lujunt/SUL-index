@@ -212,11 +212,24 @@ int main(int argc, char** argv) {
 
     // 仅构建路径下记录 record/build（load 路径无构建数据）
     if (did_build) {
+        // 等效存储开销 file_bytes_kl1：假设 EncDataPoint pool 中 ART-key
+        // 只压成 1 个密文（其余 key_len-1 个不写盘），仅作为跨 dim 可比口径，
+        // 真实磁盘文件大小仍为 file_bytes，不改任何序列化代码。
+        // 单密文落盘 = 4B 长度前缀 + ceil(2K/8) 字节 raw 大数
+        const int64_t key_len_actual    = cfg.key_len();
+        const int64_t cipher_disk_bytes = 4 + ((2LL * KSZ + 7) / 8);
+        const int64_t kl1_saved =
+            (key_len_actual - 1) * static_cast<int64_t>(N) * cipher_disk_bytes;
+        const size_t  file_bytes_kl1 =
+            (static_cast<int64_t>(file_bytes) > kl1_saved)
+            ? file_bytes - static_cast<size_t>(kl1_saved) : 0;
+
         fs::create_directories("record");
         std::string build_csv = ExperimentRecorder::build_path("build", exp_params);
         ExperimentRecorder::append_row(build_csv,
             {"timestamp","K","err","dim","N",
-             "build_ms","keygen_ms","save_ms","load_ms","file_bytes"},
+             "build_ms","keygen_ms","save_ms","load_ms",
+             "file_bytes","file_bytes_kl1"},
             {ExperimentRecorder::now_iso(),
              std::to_string(KSZ),
              std::to_string(cfg.error_bound),
@@ -226,8 +239,14 @@ int main(int argc, char** argv) {
              ExperimentRecorder::ftoa(keygen_ms),
              ExperimentRecorder::ftoa(save_ms),
              ExperimentRecorder::ftoa(load_ms),
-             std::to_string(file_bytes)});
+             std::to_string(file_bytes),
+             std::to_string(file_bytes_kl1)});
         std::cout << "  → record: " << build_csv << "\n";
+        std::cout << "  file_bytes      = " << file_bytes      << " B"
+                  << "  (" << (file_bytes      / 1024.0 / 1024.0) << " MiB, 实际盘上)\n";
+        std::cout << "  file_bytes_kl1  = " << file_bytes_kl1  << " B"
+                  << "  (" << (file_bytes_kl1  / 1024.0 / 1024.0)
+                  << " MiB, 等效: ART-key 仅 1 密文/点)\n";
     }
 
     // ------ Phase 2: 范围查询（来自查询文件） ------
