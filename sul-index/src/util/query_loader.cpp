@@ -42,22 +42,6 @@ bool is_skip(const std::string& line) {
     return true;
 }
 
-// 提取数据集 stem 的前两个 _ 分量
-// 例：uniform_20000_1_2_.csv → uniform_20000
-std::string dataset_stem_first_two(const std::string& dataset_path) {
-    auto slash = dataset_path.find_last_of("/\\");
-    std::string fname = (slash == std::string::npos) ? dataset_path
-                                                     : dataset_path.substr(slash + 1);
-    auto dot = fname.find_last_of('.');
-    std::string stem = (dot == std::string::npos) ? fname : fname.substr(0, dot);
-
-    auto u1 = stem.find('_');
-    if (u1 == std::string::npos) return stem;
-    auto u2 = stem.find('_', u1 + 1);
-    if (u2 == std::string::npos) return stem;
-    return stem.substr(0, u2);
-}
-
 // 0.25 → "0.25"  0.5 → "0.5"  1.0 → "1"  2.0 → "2"  4.0 → "4"
 std::string format_ratio_pct(double pct) {
     char buf[32];
@@ -205,6 +189,20 @@ QueryFile load_query_file(const std::string& path, int32_t scale) {
     return result;
 }
 
+std::string dataset_stem(const std::string& dataset_path) {
+    auto slash = dataset_path.find_last_of("/\\");
+    std::string fname = (slash == std::string::npos) ? dataset_path
+                                                     : dataset_path.substr(slash + 1);
+    auto dot = fname.find_last_of('.');
+    std::string stem = (dot == std::string::npos) ? fname : fname.substr(0, dot);
+
+    auto u1 = stem.find('_');
+    if (u1 == std::string::npos) return stem;
+    auto u2 = stem.find('_', u1 + 1);
+    if (u2 == std::string::npos) return stem;
+    return stem.substr(0, u2);
+}
+
 size_t generate_query_files(const std::string& dataset_path,
                             const std::string& output_dir,
                             int32_t            n_queries,
@@ -217,7 +215,7 @@ size_t generate_query_files(const std::string& dataset_path,
     if (N < 1) throw std::runtime_error("generate_query_files: empty dataset");
 
     const double scale_d = static_cast<double>(scale);
-    const std::string stem = dataset_stem_first_two(dataset_path);
+    const std::string stem = dataset_stem(dataset_path);
 
     const std::vector<double> RATIO_PCTS = {0.25, 0.5, 1.0, 2.0, 4.0};
     constexpr double TOL = 0.05;  // ±5% 容差

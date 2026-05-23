@@ -6,7 +6,9 @@
 namespace sul::util {
 
 // 实验参数标记。文件命名拼接：
-//   <kind>_K{K}_err{err}_dim{dim}_N{N}{extra}.csv
+//   <kind>_<dataset_stem>_K{K}_err{err}_dim{dim}{extra}.csv
+// 注：N 已隐含在 dataset_stem 中（如 uniform_20000 / skewed_20000），
+//     不再单独追加 _N 后缀。
 // extra 由调用者按实验类型自定义，例如：
 //   range  → "_sl0p25"
 //   work   → "_R80W20"
@@ -15,13 +17,13 @@ struct ExpParams {
     int K   = 0;
     int err = 0;
     int dim = 0;
-    int N   = 0;
+    std::string dataset_stem;
     std::string extra;
 };
 
 class ExperimentRecorder {
 public:
-    // 生成 record/{kind}_K..._err..._dim..._N...{extra}.csv 绝对路径
+    // 生成 record/{kind}_<stem>_K..._err..._dim...{extra}.csv 绝对路径
     // record_dir 为空时回退到 ./record/（相对当前工作目录）
     static std::string build_path(const std::string& kind,
                                   const ExpParams& p,

@@ -54,11 +54,13 @@ std::string ExperimentRecorder::build_path(const std::string& kind,
     std::string dir = record_dir.empty() ? "record" : record_dir;
     ensure_dir(dir);
     std::ostringstream os;
-    os << dir << '/' << kind
-       << "_K" << p.K
+    os << dir << '/' << kind;
+    if (!p.dataset_stem.empty()) {
+        os << '_' << p.dataset_stem;
+    }
+    os << "_K" << p.K
        << "_err" << p.err
        << "_dim" << p.dim
-       << "_N" << p.N
        << p.extra
        << ".csv";
     return os.str();

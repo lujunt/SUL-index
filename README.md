@@ -113,7 +113,7 @@ cmake --build build -j
 # 例（默认 uniform_volume 模式，适合均匀数据）：
 ./build/sul_query_gen datasets/uniform_20000_1_2_.csv 100 query
 # 例（target_hits 自适应模式，跨数据集横向对比时强烈推荐）：
-./build/sul_query_gen datasets/skewed_20000_4_2_.csv 100 query_target --target-hits
+./build/sul_query_gen datasets/skewed_20000_4_2_.csv 100 query --target-hits
 ```
 
 参数：
@@ -181,13 +181,13 @@ cmake --build build -j
 行为：
 - **Phase 1 构建**：
   - 明文 `bulk_load` 现场构建（无序列化）
-  - 密文：若 `indexes/index_K{K}_err{err}_dim{d}_N{N}.scidx` 存在 → 直接 `load_from_file`；否则 → `bulk_load` + `save_to_file` + 释放 + 重新 `load_from_file`（始终在反序列化后的实例上执行查询）
+  - 密文：若 `indexes/index_<stem>_K{K}_err{err}_dim{d}.scidx` 存在 → 直接 `load_from_file`；否则 → `bulk_load` + `save_to_file` + 释放 + 重新 `load_from_file`（始终在反序列化后的实例上执行查询）
 - **Phase 2 范围查询**：逐条 range_query 在明文/密文各跑一次，比对 orig_id 集合；同时通过 `range_query_with_stats` 拆分密文端学习层 / ART 层耗时
 - 退出码：0 = PASS，1 = FAIL
 
 产出：
 
-**① `record/build_K{K}_err{err}_dim{d}_N{N}.csv`** —— 仅 build 路径写入（命中已有 `.scidx` 时跳过）
+**① `record/build_<stem>_K{K}_err{err}_dim{d}.csv`** —— 仅 build 路径写入（命中已有 `.scidx` 时跳过）
 
 | 字段 | 含义 |
 |---|---|
@@ -200,7 +200,7 @@ cmake --build build -j
 | `file_bytes` | **磁盘真实大小**（v2 raw 二进制格式，K=1024/dim=2/N=20000 约 41.7 MiB） |
 | `file_bytes_kl1` | **等效存储口径**：假设 EncDataPoint pool 中 ART-key 仅压成 1 个密文/点时的折算大小，公式 `file_bytes − (key_len−1) × N × (4 + ⌈2K/8⌉)`；用于跨 dim 公平对比，**真实磁盘文件不变** |
 
-**② `record/rangequery_K{K}_err{err}_dim{d}_N{N}_sl{窗口比例}.csv`** —— 每次跑都追加一行
+**② `record/rangequery_<stem>_K{K}_err{err}_dim{d}_sl{窗口比例}.csv`** —— 每次跑都追加一行
 
 | 字段 | 含义 |
 |---|---|
@@ -251,7 +251,7 @@ cmake --build build -j
 | 少读多写 | 20  | `1024 -1 20  2000` |
 | 全写   | 0   | `1024 -1 0   2000` |
 
-产出：`record/workload_K{K}_err{err}_dim{d}_N{N}_R{r}W{w}.csv` —— 每次跑追加一行
+产出：`record/workload_<stem>_K{K}_err{err}_dim{d}_R{r}W{w}.csv` —— 每次跑追加一行
 
 | 字段 | 含义 |
 |---|---|
@@ -293,7 +293,7 @@ cmake --build build -j
 
 产出：
 
-**① `record/update_K{K}_err{err}_dim{d}_N{N}_ul{tag}.csv`** —— 每次跑追加一行
+**① `record/update_<stem>_K{K}_err{err}_dim{d}_ul{tag}.csv`** —— 每次跑追加一行
 
 | 字段 | 含义 |
 |---|---|
@@ -305,7 +305,7 @@ cmake --build build -j
 | `post_query_avg_ms` | 更新后在 `query_csv` 上跑范围查询的单查询平均耗时 |
 | `post_recall` | 更新后密文范围查询的召回率（目标 = 1） |
 
-**② `indexes/index_K{K}_err{err}_dim{d}_N{N}_ul{tag}_update.scidx`** —— 更新后的索引快照，可被 `SULCipherIndex::load_from_file` 直接加载继续查询，与步骤 2 中的 baseline `.scidx` 命名区分（多 `_ul{tag}_update` 后缀）。
+**② `indexes/index_<stem>_K{K}_err{err}_dim{d}_ul{tag}_update.scidx`** —— 更新后的索引快照，可被 `SULCipherIndex::load_from_file` 直接加载继续查询，与步骤 2 中的 baseline `.scidx` 命名区分（多 `_ul{tag}_update` 后缀）。
 
 > 此 `_update.scidx` 与步骤 2 中的 baseline `.scidx` 区分；后续可用 `SULCipherIndex::load_from_file` 直接加载继续查询。
 
@@ -319,7 +319,7 @@ cmake --build build -j
     datasets/uniform_20000_1_2_.csv \
     query/uniform_20000_0.25.csv \
     1024 indexes
-# 落盘命名：indexes/index_K{K}_err{err}_dim{d}_N{N}.scidx
+# 落盘命名：indexes/index_<stem>_K{K}_err{err}_dim{d}.scidx
 ```
 
 参数：
@@ -346,7 +346,7 @@ Encrypted state: EncDataPoint 池 + Enc GPL inner/leaf + Enc ART 树前序遍历
 
 ## 记录文件命名总览
 
-`record/{kind}_K{K}_err{err}_dim{d}_N{N}[{extra}].csv`，extra 按实验类型：
+`record/{kind}_<stem>_K{K}_err{err}_dim{d}[{extra}].csv`，extra 按实验类型：
 - `build` → 无 extra
 - `rangequery` → `_sl{窗口比例}`（例 `_sl0p25`）
 - `workload` → `_R{r}W{w}`（例 `_R50W50`）
@@ -354,9 +354,10 @@ Encrypted state: EncDataPoint 池 + Enc GPL inner/leaf + Enc ART 树前序遍历
 
 同参数多次实验会 append 到同一文件，便于横向对比。详细字段定义见 `sul_项目文档.md` §18。
 
-`indexes/index_K{K}_err{err}_dim{d}_N{N}[{extra}].scidx`，extra 按来源：
-- 步骤 2 / 步骤 5 写入的 baseline → 无 extra
-- 步骤 4 写入的更新快照 → `_ul{tag}_update`
+`indexes/index_<stem>_K{K}_err{err}_dim{d}[{extra}].scidx`：
+- `<stem>` = 数据集文件名前两个 `_` 分量（如 `uniform_20000` / `skewed_20000`），由 `util::dataset_stem(path)` 统一派生，与 `query/<stem>_*.csv` 同源。**新增 stem 维度后跨数据集同 K/err/dim 不再共享 scidx 缓存**（避免曾经踩过的 uniform/skewed 串味坑）
+- N 已隐含在 `<stem>` 中（按当前命名约定），故 scidx 与 record（build/rangequery/workload/update）后缀均不再重复 `_N{N}`
+- `extra` 按来源：步骤 2 / 步骤 5 写入的 baseline → 无 extra；步骤 4 写入的更新快照 → `_ul{tag}_update`
 
 加载后的实例为查询只读模式（`is_loaded()==true`），`insert` 会返回 `Failed`。
 
@@ -385,7 +386,7 @@ Encrypted state: EncDataPoint 池 + Enc GPL inner/leaf + Enc ART 树前序遍历
 ```
 === Phase 1: 构建索引 ===
   plain  bulk_load: 3.4 ms   leaf=101  learning=15675  art=4325
-  密文索引: 命中 indexes/index_K1024_err20_dim2_N20000.scidx → load
+  密文索引: 命中 indexes/index_uniform_20000_K1024_err20_dim2.scidx → load
   load_from_file: 221 ms
   cipher: leaf=101  is_loaded=true
   结构规模一致? YES (loaded 模式仅比较 leaf_count)
@@ -396,20 +397,20 @@ Encrypted state: EncDataPoint 池 + Enc GPL inner/leaf + Enc ART 树前序遍历
   总耗时: plain=2.5 ms  cipher=80385 ms
   平均单查询: plain=0.025 ms/q  cipher=803 ms/q
   cipher 拆分: learning=14 ms/q  art=789 ms/q
-  → record: record/rangequery_K1024_err20_dim2_N20000_sl0p25.csv
+  → record: record/rangequery_uniform_20000_K1024_err20_dim2_sl0p25.csv
 
 === 总结 ===
   range_query 对比: 100/100
   结论: PASS 密文索引与明文索引结果一致
 ```
 
-> 第 1 次跑会走 build + save + reload，多出 ~6 秒 keygen+构建，并额外打印 `→ record: record/build_K1024_err20_dim2_N20000.csv`（把 `build_ms / keygen_ms / save_ms / load_ms / file_bytes / file_bytes_kl1` 写入 build CSV，并在 stdout 多打两行 `file_bytes` 与 `file_bytes_kl1` 的 MiB 等效值）；之后再跑直接命中 load 路径，仅追加 rangequery CSV。
+> 第 1 次跑会走 build + save + reload，多出 ~6 秒 keygen+构建，并额外打印 `→ record: record/build_uniform_20000_K1024_err20_dim2.csv`（把 `build_ms / keygen_ms / save_ms / load_ms / file_bytes / file_bytes_kl1` 写入 build CSV，并在 stdout 多打两行 `file_bytes` 与 `file_bytes_kl1` 的 MiB 等效值）；之后再跑直接命中 load 路径，仅追加 rangequery CSV。
 
 `sul_serde_demo` 输出片段（save → load → query 对比）：
 
 ```
 === Phase 3: 序列化到 indexes/ ===
-  写出 = indexes/index_K1024_err20_dim2_N20000.scidx
+  写出 = indexes/index_uniform_20000_K1024_err20_dim2.scidx
   耗时 = 175 ms      文件大小 = 42 MB   # v2 raw 二进制；v1 hex 时同输入约 82 MB
 
 === Phase 4: 反序列化 ===

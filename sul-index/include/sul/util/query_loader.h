@@ -24,6 +24,13 @@ struct QueryFile {
 // 加载失败抛 std::runtime_error
 QueryFile load_query_file(const std::string& path, int32_t scale = 65536);
 
+// 提取数据集文件名的 stem（前两个 _ 之间的部分）
+// 例：datasets/uniform_20000_1_2_.csv → "uniform_20000"
+//     datasets/skewed_20000_4_2_.csv  → "skewed_20000"
+//     a.csv                           → "a"
+// 用于跨工具一致命名：query/<stem>_<ratio>.csv 与 indexes/index_<stem>_K..._N....scidx
+std::string dataset_stem(const std::string& dataset_path);
+
 // 生成 5 个查询窗口文件到 output_dir
 // 规则：
 //   - 比例固定 {0.25%, 0.5%, 1%, 2%, 4%}

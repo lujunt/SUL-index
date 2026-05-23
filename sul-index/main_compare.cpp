@@ -5,9 +5,9 @@
 // 流程：
 //   1) 构建：明文 bulk_load 现场构建；密文优先 load 已有 .scidx，
 //      否则 build + save_to_file + 重新 load，始终在反序列化后的实例上查询
-//      若走 build 路径，则写入 record/build_K{K}_err{err}_dim{d}_N{N}.csv
+//      若走 build 路径，则写入 record/build_<stem>_K{K}_err{err}_dim{d}.csv
 //   2) 范围查询：对每条 range_query 在明文/密文各跑一次，对比 orig_id 集合；
-//      统一写入 record/rangequery_K{K}_err{err}_dim{d}_N{N}_sl{tag}.csv
+//      统一写入 record/rangequery_<stem>_K{K}_err{err}_dim{d}_sl{tag}.csv
 //
 // 退出码：0 = PASS（全部一致），1 = FAIL
 
@@ -120,10 +120,11 @@ int main(int argc, char** argv) {
               << "  art=" << plain.art_layer_points() << "\n";
 
     namespace fs = std::filesystem;
-    const std::string scidx_path = "indexes/index_K" + std::to_string(KSZ)
+    const std::string scidx_path = "indexes/index_"
+                                 + util::dataset_stem(dataset_path)
+                                 + "_K"   + std::to_string(KSZ)
                                  + "_err" + std::to_string(cfg.error_bound)
                                  + "_dim" + std::to_string(DIM)
-                                 + "_N"   + std::to_string(N)
                                  + ".scidx";
     fs::create_directories("indexes");
 
@@ -208,7 +209,8 @@ int main(int argc, char** argv) {
               << (cipher.is_loaded() ? " (loaded 模式仅比较 leaf_count)" : "") << "\n";
 
     const double sl_pct = parse_sl_pct_from_path(query_path);
-    ExpParams exp_params{ KSZ, cfg.error_bound, DIM, N, "" };
+    ExpParams exp_params{ KSZ, cfg.error_bound, DIM,
+                          util::dataset_stem(dataset_path), "" };
 
     // 仅构建路径下记录 record/build（load 路径无构建数据）
     if (did_build) {

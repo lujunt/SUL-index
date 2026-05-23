@@ -11,8 +11,8 @@
 //   npq        : 批量点查询的样本数。默认 20，从 dataset 抽样
 //
 // 产出:
-//   record/build_K{K}_err{err}_dim{d}_N{N}.csv
-//   record/rangequery_K{K}_err{err}_dim{d}_N{N}_sl{tag}.csv
+//   record/build_<stem>_K{K}_err{err}_dim{d}.csv
+//   record/rangequery_<stem>_K{K}_err{err}_dim{d}_sl{tag}.csv
 
 #include "sul/cipher/sul_cipher_index.h"
 #include "sul/util/csv_loader.h"
@@ -220,7 +220,7 @@ int main(int argc, char** argv) {
               << " art=" << art_bytes
               << " total=" << index_bytes << "\n";
 
-    ExpParams p{ K, err, DIM, N, "" };
+    ExpParams p{ K, err, DIM, util::dataset_stem(dataset_path), "" };
     {
         std::string path = ExperimentRecorder::build_path("build", p);
         ExperimentRecorder::append_row(path,

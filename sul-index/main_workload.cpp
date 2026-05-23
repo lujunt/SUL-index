@@ -9,11 +9,12 @@
 //   2) 读操作 = 点查询，坐标从 train 数据集随机抽样（同分布、保证可命中）
 //   3) 写操作 = insert_csv 按行顺序循环取用
 //   4) 按 read_pct/100 的比例交叉执行 ops 次操作
-//   5) 写 record/workload_K..._err..._dim..._N..._R{r}W{w}.csv
+//   5) 写 record/workload_<stem>_K..._err..._dim..._R{r}W{w}.csv
 
 #include "sul/cipher/sul_cipher_index.h"
 #include "sul/util/csv_loader.h"
 #include "sul/util/experiment_recorder.h"
+#include "sul/util/query_loader.h"
 
 #include <algorithm>
 #include <chrono>
@@ -165,7 +166,7 @@ int main(int argc, char** argv) {
 
     char extra_buf[64];
     std::snprintf(extra_buf, sizeof(extra_buf), "_R%dW%d", read_pct, write_pct);
-    ExpParams p{ K, err, DIM, N, extra_buf };
+    ExpParams p{ K, err, DIM, util::dataset_stem(train_path), extra_buf };
     std::string path = ExperimentRecorder::build_path("workload", p);
     ExperimentRecorder::append_row(path,
         {"timestamp","K","err","dim","N",

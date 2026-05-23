@@ -113,12 +113,14 @@ int main(int argc, char** argv) {
     // ---- Phase 3: save_to_file ----
     std::cout << "\n=== Phase 3: 序列化到 " << out_dir << "/ ===\n";
     fs::create_directories(out_dir);
-    // 命名规则：与 record 命名保持一致，含 K/err/dim/N 参数
-    //   index_K{K}_err{err}_dim{d}_N{N}.scidx
-    const std::string out_path = out_dir + "/index_K" + std::to_string(KSZ)
+    // 命名规则：含 dataset stem + K/err/dim 参数，避免跨数据集同参数缓存冲突
+    //   index_<stem>_K{K}_err{err}_dim{d}.scidx
+    // 注：N 已隐含在 <stem> 内（如 uniform_20000 / skewed_20000），无需再加 _N 后缀
+    const std::string out_path = out_dir + "/index_"
+                               + util::dataset_stem(dataset_path)
+                               + "_K"   + std::to_string(KSZ)
                                + "_err" + std::to_string(cfg.error_bound)
                                + "_dim" + std::to_string(DIM)
-                               + "_N"   + std::to_string(N)
                                + ".scidx";
     auto st0 = std::chrono::steady_clock::now();
     try {

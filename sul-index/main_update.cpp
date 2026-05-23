@@ -9,7 +9,7 @@
 //   2) insert_csv 全量加载，按 ul_pct 截取前 ceil(N_train * ul_pct/100) 条作更新集
 //   3) 顺序执行所有 insert，记录 update_total_ms / update_avg_ms
 //   4) 在更新后的索引上批量跑 query_csv，记录 post_query_avg_ms / post_recall
-//   5) 写 record/update_K..._err..._dim..._N..._ul{tag}.csv
+//   5) 写 record/update_<stem>_K..._err..._dim..._ul{tag}.csv
 
 #include "sul/cipher/sul_cipher_index.h"
 #include "sul/util/csv_loader.h"
@@ -148,7 +148,7 @@ int main(int argc, char** argv) {
               << "  post_recall=" << post_recall
               << "  returned_avg=" << (NQ ? static_cast<double>(rq_returned) / NQ : 0) << "\n";
 
-    ExpParams p{ K, err, DIM, N,
+    ExpParams p{ K, err, DIM, util::dataset_stem(train_path),
                  "_ul" + ExperimentRecorder::pct_tag(ul_pct) };
     std::string path = ExperimentRecorder::build_path("update", p);
     ExperimentRecorder::append_row(path,
@@ -169,10 +169,11 @@ int main(int argc, char** argv) {
     // 序列化更新后的索引，命名加 update 标记，方便后续查询
     namespace fs = std::filesystem;
     fs::create_directories("indexes");
-    const std::string scidx_path = "indexes/index_K" + std::to_string(K)
+    const std::string scidx_path = "indexes/index_"
+                                 + util::dataset_stem(train_path)
+                                 + "_K"   + std::to_string(K)
                                  + "_err" + std::to_string(err)
                                  + "_dim" + std::to_string(DIM)
-                                 + "_N"   + std::to_string(N)
                                  + "_ul"  + ExperimentRecorder::pct_tag(ul_pct)
                                  + "_update.scidx";
     auto s0 = std::chrono::steady_clock::now();
