@@ -109,17 +109,31 @@ cmake --build build -j
 
 ```bash
 # 1.1 [一次性] 生成 5 个查询窗口文件到 query/
-./build/sul_query_gen <dataset_csv> [n_queries=100] [output_dir=query]
-# 例：
+./build/sul_query_gen <dataset_csv> [n_queries=100] [output_dir=query] [--target-hits]
+# 例（默认 uniform_volume 模式，适合均匀数据）：
 ./build/sul_query_gen datasets/uniform_20000_1_2_.csv 100 query
+# 例（target_hits 自适应模式，跨数据集横向对比时强烈推荐）：
+./build/sul_query_gen datasets/skewed_20000_4_2_.csv 100 query_target --target-hits
 ```
 
 参数：
 - `dataset_csv` **必填**，原始数据集 CSV 路径
 - `n_queries` 可选，每个比例文件内生成的范围查询条数（默认 100）
 - `output_dir` 可选，查询窗口输出目录（默认 `query`）
+- `--target-hits` 可选 flag，二分自适应模式（见下）
 
-产出固定 5 个文件：`query/<stem>_{0.25,0.5,1,2,4}.csv`，对应 0.25% / 0.5% / 1% / 2% / 4% 选择率。这些文件**长期复用**，后续步骤 2 的范围查询直接读取这里的文件，不会重新生成。
+产出固定 5 个文件：`<output_dir>/<stem>_{0.25,0.5,1,2,4}.csv`，对应 0.25% / 0.5% / 1% / 2% / 4% 选择率。这些文件**长期复用**，后续步骤 2 的范围查询直接读取，不会重新生成。
+
+**两种边长选取模式**（决定窗口实际命中点数）：
+
+| 模式 | edge 来源 | 适用 | 实测偏差 |
+|---|---|---|---|
+| `uniform_volume`（默认） | `edge = ratio^(1/dim)`，按 uniform 假设反推体积比 | 均匀数据集 | uniform 上 ≈ ratio；**skewed 上可达 ratio 的 3-4 倍** |
+| `target_hits`（`--target-hits`） | 对每个 center 二分搜索 edge，使实测命中数 ∈ `[N×ratio×0.95, N×ratio×1.05]` | **所有数据集**，特别是 skewed / 跨数据集横向对比 | 严格 ±5%；30 轮收敛失败则 best-effort + stderr 警告 |
+
+`--target-hits` 模式下文件的 `#` 注释 header 额外含 `target / tol / hit_min / hit_mean / hit_max / converged=N/M` 字段，方便核对生成质量。**两种模式输出的 CSV 数据行格式完全一致**，下游 `load_query_file` 无需感知。
+
+> ⚠️ **跨数据集对比时务必使用 `--target-hits`**。否则 `skewed` 和 `uniform` 同一比例（如 1%）的实测命中数可能差几倍，`rangequery_*.csv` 中的 `avg_ms / returned_avg` 列无法直接横向比较。
 
 ```bash
 # 1.2 把数据集按 train_ratio 切成 train + insert（命名自动派生 dim/N 标记）
@@ -197,9 +211,11 @@ cmake --build build -j
 | `avg_ms` | 密文端单查询平均耗时（= `total_ms / query_count`） |
 | `learning_ms_avg` | 密文端单查询中 GPL 学习层耗时（SQQP 定位 + 槽位扫描） |
 | `art_ms_avg` | 密文端单查询中 ART 层耗时（SARTQ + SPI 过滤），`avg_ms ≈ learning_ms_avg + art_ms_avg` |
-| `returned_avg` | 单查询平均返回点数 |
+| `returned_avg` | 密文端单查询平均返回点数 |
 | `recall` | 密文∩明文 / 明文返回数（密文召回率，目标 = 1） |
 | `precision` | 密文∩明文 / 密文返回数（密文精确率，理论 = 1） |
+| `actual_ratio_pct` | **实测选择率**（plain 端平均命中数 / N × 100）。`uniform_volume` 模式：uniform 数据 ≈ `sl_pct`，skewed 可与 `sl_pct` 差几倍（体积比 ≠ 点数比）；`target_hits` 模式：所有数据集都严格 ≈ `sl_pct`（±5% 容差） |
+| `returned_min / returned_p50 / returned_p95 / returned_max` | plain 端命中数的分布（最小 / 中位数 / 95 分位 / 最大）。skewed 数据下 `max ≫ p50` 体现热点簇查询代价的尾部 |
 
 ### 步骤 3：场景实验（`sul_workload`）
 
@@ -353,7 +369,7 @@ Encrypted state: EncDataPoint 池 + Enc GPL inner/leaf + Enc ART 树前序遍历
 | Target | 入参 | 用途 |
 |--------|------|------|
 | `sul_demo` | `<dataset_csv> [error_bound]` | 明文索引 demo + BruteForceScanner 真值验证 |
-| `sul_query_gen` | `<dataset_csv> [n_queries] [output_dir]` | 从数据集生成 5 个不同选择率的查询窗口文件 |
+| `sul_query_gen` | `<dataset_csv> [n_queries] [output_dir] [--target-hits]` | 从数据集生成 5 个不同选择率的查询窗口文件；默认按 uniform 体积比，`--target-hits` 启用二分自适应（适合 skewed 与跨数据集对比） |
 | `sul_split` | `<full_csv> [out_dir=datasets] [ratio=0.9] [seed=42]` | 数据集划分（自动派生 `<stem>_dim{d}_N{n}_{train,insert}.csv`） |
 | `sul_compare_demo` | `<dataset_csv> <query_csv> [paillier_key] [err]` | 一键明密文对比 + 范围查询实验：明文 build + 密文 load-or-build-save-load + 范围查询比对 + record/build & rangequery 写入 |
 | `sul_serde_demo` | `<dataset_csv> <query_csv> [paillier_key] [out_dir]` | 密文索引序列化往返 + load 后查询比对 |
@@ -421,7 +437,7 @@ Encrypted state: EncDataPoint 池 + Enc GPL inner/leaf + Enc ART 树前序遍历
 | 学习层槽位 | 动态 `slot_count = max(2 × seg_len + 2 × ε, 8)` |
 | 密文方案 | Paillier 同态加密（ophelib），DSP/DAP 双方单进程模拟 |
 | 安全协议 | OSM（密文乘法）/ SIC（密文比较）/ SPI（点在范围内） |
-| 查询窗口 | 超立方体，边长 `pow(ratio, 1/dim)`，中心从数据集随机抽样 |
+| 查询窗口 | 超立方体，中心从数据集随机抽样；边长支持两种模式：`uniform_volume`（默认，`edge=ratio^(1/dim)`）/ `target_hits`（`--target-hits`，二分搜索 edge 使实测命中数命中 N×ratio ±5%） |
 
 详细设计与协议流程见 [`sul_项目文档.md`](./sul_项目文档.md)。
 
@@ -438,4 +454,6 @@ Encrypted state: EncDataPoint 池 + Enc GPL inner/leaf + Enc ART 树前序遍历
 - ✅ 密文实验流水线：K/err 参数化、insert 文件驱动、record 自动归档（build/rangequery/workload/update 4 类 CSV，按参数命名）
 - ✅ 点查询/范围查询的学习层/ART 层耗时拆分（`QueryStats`）
 - ✅ 数据集划分工具 `sul_split`（均匀采样，可复现）
+- ✅ 查询窗口生成支持 `--target-hits` 二分自适应（跨数据集 / skewed 实验严格命中 N×ratio ±5%）
+- ✅ `rangequery_*.csv` 加 plain 端实测分布列（`actual_ratio_pct / returned_min / returned_p50 / returned_p95 / returned_max`），暴露热点尾部
 - ⏳ 多分布数据对比 · 并发控制 · 重训练实验热写

@@ -259,6 +259,8 @@ int main(int argc, char** argv) {
     double cipher_ms_total       = 0.0;
     double cipher_learn_us_sum   = 0.0;
     double cipher_art_us_sum     = 0.0;
+    std::vector<size_t> plain_hits_per_query;
+    plain_hits_per_query.reserve(qf.queries.size());
 
     for (size_t qi = 0; qi < qf.queries.size(); ++qi) {
         const auto& q = qf.queries[qi];
@@ -278,6 +280,7 @@ int main(int argc, char** argv) {
 
         plain_total_returned  += p_res.size();
         cipher_total_returned += c_res.size();
+        plain_hits_per_query.push_back(p_res.size());
 
         std::set<int32_t> p_ids, c_ids;
         for (auto* p : p_res) p_ids.insert(p->orig_id);
@@ -322,6 +325,28 @@ int main(int argc, char** argv) {
     const double returned_avg =
         NQ ? static_cast<double>(cipher_total_returned) / static_cast<double>(NQ) : 0.0;
 
+    // plain 端实测命中分布（真值），用于跨数据集口径对齐
+    // skewed 数据上 sl_pct 仅是名义体积比，actual_ratio_pct 才是真选择率
+    size_t hits_min = 0, hits_p50 = 0, hits_p95 = 0, hits_max = 0;
+    double actual_ratio_pct = 0.0;
+    if (!plain_hits_per_query.empty()) {
+        std::vector<size_t> sorted_hits = plain_hits_per_query;
+        std::sort(sorted_hits.begin(), sorted_hits.end());
+        const size_t M = sorted_hits.size();
+        hits_min = sorted_hits.front();
+        hits_max = sorted_hits.back();
+        hits_p50 = sorted_hits[M / 2];
+        // p95 索引：ceil(0.95*M) - 1，截断到 [0, M-1]
+        size_t idx95 = (M * 95 + 99) / 100;
+        if (idx95 == 0) idx95 = 1;
+        if (idx95 > M) idx95 = M;
+        hits_p95 = sorted_hits[idx95 - 1];
+        const double plain_returned_avg =
+            static_cast<double>(plain_total_returned) / static_cast<double>(M);
+        actual_ratio_pct = N > 0
+            ? (plain_returned_avg / static_cast<double>(N)) * 100.0 : 0.0;
+    }
+
     {
         fs::create_directories("record");
         ExpParams pr = exp_params;
@@ -331,7 +356,9 @@ int main(int argc, char** argv) {
             {"timestamp","K","err","dim","N","sl_pct",
              "query_count","total_ms","avg_ms",
              "learning_ms_avg","art_ms_avg",
-             "returned_avg","recall","precision"},
+             "returned_avg","recall","precision",
+             "actual_ratio_pct","returned_min","returned_p50",
+             "returned_p95","returned_max"},
             {ExperimentRecorder::now_iso(),
              std::to_string(KSZ),
              std::to_string(cfg.error_bound),
@@ -345,8 +372,19 @@ int main(int argc, char** argv) {
              ExperimentRecorder::ftoa(cipher_art_ms_avg),
              ExperimentRecorder::ftoa(returned_avg),
              ExperimentRecorder::ftoa(recall),
-             ExperimentRecorder::ftoa(precision)});
+             ExperimentRecorder::ftoa(precision),
+             ExperimentRecorder::ftoa(actual_ratio_pct),
+             std::to_string(hits_min),
+             std::to_string(hits_p50),
+             std::to_string(hits_p95),
+             std::to_string(hits_max)});
         std::cout << "  → record: " << rq_csv << "\n";
+        std::cout << "  实测选择率(plain): " << actual_ratio_pct << "%"
+                  << "  (名义 sl_pct=" << sl_pct << "%)\n"
+                  << "  plain 命中分布: min=" << hits_min
+                  << " p50=" << hits_p50
+                  << " p95=" << hits_p95
+                  << " max=" << hits_max << "\n";
     }
 
     // ------ 总结 ------

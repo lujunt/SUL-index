@@ -183,17 +183,10 @@ std::vector<DataPoint*> SULPlainIndex::range_query(const int32_t* low,
 
     std::vector<DataPoint*> candidates;
 
-    // 收集单个叶子中z值在[z_min, z_max]范围内的槽位点
-    auto collect_leaf_slots_range = [&](int32_t leaf_idx, uint64_t z_min, uint64_t z_max) {
-        const GPLLeafNode& leaf = leaf_nodes_[leaf_idx];
-        for (int32_t p = 0; p < leaf.slot_count; ++p) {
-            if (!leaf.occupied[p]) continue;
-            DataPoint* dp = leaf.data_slots[p];
-            if (dp && dp->z_value >= z_min && dp->z_value <= z_max) candidates.push_back(dp);
-        }
-    };
-
-    // 收集叶子中所有有效槽位（中间叶子：完全被范围覆盖）
+    // 收集叶子中所有有效槽位（不按 z 值过滤）
+    // 注意：不能用 z 值范围预过滤候选——矩形 [low, high] 内的点其 z 值不一定
+    // 落在 [z_lo, z_hi] 区间内（Z-curve 在位翻转处不连续），过滤会导致漏点。
+    // 由后段的"维度坐标闭区间过滤"兜底正确性，与 cipher 端候选生成保持一致。
     auto collect_leaf_slots_all = [&](int32_t leaf_idx) {
         const GPLLeafNode& leaf = leaf_nodes_[leaf_idx];
         for (int32_t p = 0; p < leaf.slot_count; ++p)
@@ -216,22 +209,22 @@ std::vector<DataPoint*> SULPlainIndex::range_query(const int32_t* low,
 
     if (left == right) {
         // 查询范围在同一叶子内
-        collect_leaf_slots_range(left, z_lo, z_hi);
+        collect_leaf_slots_all(left);
         const ARTTree* art = art_trees_[left].get();
         if (art && !art->empty()) {
             auto v = timed_art([&]{ return art->range_search(kb_lo, kb_hi); });
-            for (auto* p : v) if (p->z_value >= z_lo && p->z_value <= z_hi) candidates.push_back(p);
+            for (auto* p : v) candidates.push_back(p);
         }
     } else {
         // 左边界叶子：[z_lo, +∞)
-        collect_leaf_slots_range(left, z_lo, UINT64_MAX);
+        collect_leaf_slots_all(left);
         {
             const ARTTree* art = art_trees_[left].get();
             if (art && !art->empty()) {
                 uint8_t kb_max[MAX_KEY_BYTES];
                 std::memset(kb_max, 0xFF, static_cast<size_t>(kl));
                 auto v = timed_art([&]{ return art->range_search(kb_lo, kb_max); });
-                for (auto* p : v) if (p->z_value >= z_lo) candidates.push_back(p);
+                for (auto* p : v) candidates.push_back(p);
             }
         }
         // 中间叶子：完全收录
@@ -244,14 +237,14 @@ std::vector<DataPoint*> SULPlainIndex::range_query(const int32_t* low,
             }
         }
         // 右边界叶子：(-∞, z_hi]
-        collect_leaf_slots_range(right, 0, z_hi);
+        collect_leaf_slots_all(right);
         {
             const ARTTree* art = art_trees_[right].get();
             if (art && !art->empty()) {
                 uint8_t kb_min[MAX_KEY_BYTES];
                 std::memset(kb_min, 0x00, static_cast<size_t>(kl));
                 auto v = timed_art([&]{ return art->range_search(kb_min, kb_hi); });
-                for (auto* p : v) if (p->z_value <= z_hi) candidates.push_back(p);
+                for (auto* p : v) candidates.push_back(p);
             }
         }
     }

@@ -3,11 +3,15 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <fstream>
+#include <iostream>
+#include <limits>
 #include <random>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 namespace sul::util {
 
@@ -59,6 +63,84 @@ std::string format_ratio_pct(double pct) {
     char buf[32];
     std::snprintf(buf, sizeof(buf), "%g", pct);
     return buf;
+}
+
+// 给定 center 与 edge，计算每维平移后的窗口 [lo, hi]（均归一化到 [0,1]）
+// 输出与最终写盘格式严格一致，count_in_window 复用此 helper 保证统计自洽
+void compute_window(const DataPoint& center, int32_t DIM,
+                    double edge, double scale_d,
+                    std::vector<double>& lo_v,
+                    std::vector<double>& hi_v) {
+    const double half = edge / 2.0;
+    lo_v.assign(DIM, 0.0);
+    hi_v.assign(DIM, 0.0);
+    for (int32_t d = 0; d < DIM; ++d) {
+        double c  = static_cast<double>(center.dimensions[d]) / scale_d;
+        double lo = c - half;
+        double hi = c + half;
+        if (lo < 0.0) { lo = 0.0; hi = std::min(1.0, edge); }
+        if (hi > 1.0) { hi = 1.0; lo = std::max(0.0, 1.0 - edge); }
+        lo_v[d] = lo;
+        hi_v[d] = hi;
+    }
+}
+
+// 暴力扫数据集，统计落入闭区间 [lo, hi]^DIM 的点数（坐标归一化到 [0,1]）
+int32_t count_in_window(const std::vector<DataPoint>& data,
+                        const std::vector<double>& lo_v,
+                        const std::vector<double>& hi_v,
+                        int32_t DIM, double scale_d) {
+    const double inv_scale = 1.0 / scale_d;
+    int32_t count = 0;
+    for (const auto& dp : data) {
+        bool inside = true;
+        for (int32_t d = 0; d < DIM; ++d) {
+            double pt = static_cast<double>(dp.dimensions[d]) * inv_scale;
+            if (pt < lo_v[d] || pt > hi_v[d]) { inside = false; break; }
+        }
+        if (inside) ++count;
+    }
+    return count;
+}
+
+// 二分搜索 edge，使 count_in_window 落入 [target*(1-tol), target*(1+tol)]
+// 30 轮收敛失败则返回最接近 target 的 edge（best-effort + converged=false）
+struct BisectResult { double edge; int32_t hits; bool converged; };
+
+BisectResult bisect_edge_for_target(const std::vector<DataPoint>& data,
+                                    const DataPoint& center,
+                                    int32_t DIM, double scale_d,
+                                    int32_t target, double tol,
+                                    double edge_init,
+                                    int max_iters = 30) {
+    const int32_t lo_count = std::max(1,
+        static_cast<int32_t>(std::floor(target * (1.0 - tol))));
+    const int32_t hi_count = std::max(lo_count,
+        static_cast<int32_t>(std::ceil(target * (1.0 + tol))));
+
+    double edge_lo = 0.0, edge_hi = 1.0;
+    double edge    = std::clamp(edge_init, 1e-9, 1.0);
+
+    int32_t best_diff = std::numeric_limits<int32_t>::max();
+    double  best_edge = edge;
+    int32_t best_hits = -1;
+
+    std::vector<double> lv, hv;
+    for (int it = 0; it < max_iters; ++it) {
+        compute_window(center, DIM, edge, scale_d, lv, hv);
+        int32_t hits = count_in_window(data, lv, hv, DIM, scale_d);
+
+        int32_t diff = std::abs(hits - target);
+        if (diff < best_diff) { best_diff = diff; best_edge = edge; best_hits = hits; }
+
+        if (hits >= lo_count && hits <= hi_count) {
+            return {edge, hits, true};
+        }
+        if (hits > hi_count) edge_hi = edge;
+        else                  edge_lo = edge;
+        edge = (edge_lo + edge_hi) / 2.0;
+    }
+    return {best_edge, best_hits, false};
 }
 
 } // namespace
@@ -127,7 +209,8 @@ size_t generate_query_files(const std::string& dataset_path,
                             const std::string& output_dir,
                             int32_t            n_queries,
                             uint32_t           seed,
-                            int32_t            scale) {
+                            int32_t            scale,
+                            bool               target_hits_mode) {
     CsvLoadResult ds = load_csv(dataset_path, scale);
     const int32_t N   = static_cast<int32_t>(ds.data.size());
     const int32_t DIM = ds.dim_count;
@@ -137,21 +220,57 @@ size_t generate_query_files(const std::string& dataset_path,
     const std::string stem = dataset_stem_first_two(dataset_path);
 
     const std::vector<double> RATIO_PCTS = {0.25, 0.5, 1.0, 2.0, 4.0};
+    constexpr double TOL = 0.05;  // ±5% 容差
     size_t written = 0;
     std::mt19937 rng(seed);
     std::uniform_int_distribution<int32_t> pick(0, N - 1);
 
     for (double pct : RATIO_PCTS) {
-        const double ratio_frac = pct / 100.0;
-        // 超立方体边长（uniform 假设下选择率 = edge^dim）
-        const double edge = std::pow(ratio_frac, 1.0 / static_cast<double>(DIM));
-        const double half = edge / 2.0;
+        const double ratio_frac   = pct / 100.0;
+        const double edge_uniform = std::pow(ratio_frac, 1.0 / static_cast<double>(DIM));
+        const int32_t target = std::max(1,
+            static_cast<int32_t>(std::round(ratio_frac * N)));
 
         std::string out_path = output_dir;
         if (!out_path.empty() && out_path.back() != '/' && out_path.back() != '\\') {
             out_path.push_back('/');
         }
         out_path += stem + "_" + format_ratio_pct(pct) + ".csv";
+
+        // 先把所有窗口算好（target_hits 模式下要先跑完二分才能写完整 header）
+        std::vector<std::vector<double>> all_lo, all_hi;
+        all_lo.reserve(n_queries);
+        all_hi.reserve(n_queries);
+
+        int64_t hits_sum = 0;
+        int32_t hits_min = std::numeric_limits<int32_t>::max();
+        int32_t hits_max = 0;
+        int32_t converged_cnt = 0;
+
+        for (int32_t q = 0; q < n_queries; ++q) {
+            const auto& center = ds.data[pick(rng)];
+
+            double edge_used  = edge_uniform;
+            int32_t hits_used = -1;
+            if (target_hits_mode) {
+                auto br = bisect_edge_for_target(ds.data, center, DIM, scale_d,
+                                                  target, TOL, edge_uniform);
+                edge_used = br.edge;
+                hits_used = br.hits;
+                if (br.converged) ++converged_cnt;
+            }
+
+            std::vector<double> lv, hv;
+            compute_window(center, DIM, edge_used, scale_d, lv, hv);
+
+            if (target_hits_mode) {
+                hits_sum += hits_used;
+                hits_min = std::min(hits_min, hits_used);
+                hits_max = std::max(hits_max, hits_used);
+            }
+            all_lo.push_back(std::move(lv));
+            all_hi.push_back(std::move(hv));
+        }
 
         std::ofstream ofs(out_path);
         if (!ofs) throw std::runtime_error("generate_query_files: cannot write " + out_path);
@@ -161,29 +280,35 @@ size_t generate_query_files(const std::string& dataset_path,
             << " N=" << N
             << " dim=" << DIM
             << " ratio_pct=" << pct
-            << " edge=" << edge
-            << " n_queries=" << n_queries
-            << "\n";
-
-        for (int32_t q = 0; q < n_queries; ++q) {
-            const auto& center = ds.data[pick(rng)];
-            // 先在 dim 维度上各自计算 lo/hi，再依序写
-            std::vector<double> lo_v(DIM), hi_v(DIM);
-            for (int32_t d = 0; d < DIM; ++d) {
-                double c  = static_cast<double>(center.dimensions[d]) / scale_d;
-                double lo = c - half;
-                double hi = c + half;
-                if (lo < 0.0) { lo = 0.0; hi = std::min(1.0, edge); }
-                if (hi > 1.0) { hi = 1.0; lo = std::max(0.0, 1.0 - edge); }
-                lo_v[d] = lo;
-                hi_v[d] = hi;
+            << " mode=" << (target_hits_mode ? "target_hits" : "uniform_volume")
+            << " n_queries=" << n_queries;
+        if (target_hits_mode) {
+            const double hit_mean =
+                static_cast<double>(hits_sum) / static_cast<double>(n_queries);
+            ofs << " target=" << target
+                << " tol=" << TOL
+                << " hit_min=" << hits_min
+                << " hit_mean=" << hit_mean
+                << " hit_max=" << hits_max
+                << " converged=" << converged_cnt << "/" << n_queries;
+            if (converged_cnt < n_queries) {
+                std::cerr << "[warn] " << out_path << ": "
+                          << (n_queries - converged_cnt) << "/" << n_queries
+                          << " queries 未收敛到 ±" << (TOL * 100)
+                          << "% 容差（best-effort 保留最接近 edge）\n";
             }
+        } else {
+            ofs << " edge=" << edge_uniform;
+        }
+        ofs << "\n";
+
+        for (size_t q = 0; q < all_lo.size(); ++q) {
             for (int32_t d = 0; d < DIM; ++d) {
                 if (d > 0) ofs << ',';
-                ofs << lo_v[d];
+                ofs << all_lo[q][d];
             }
             for (int32_t d = 0; d < DIM; ++d) {
-                ofs << ',' << hi_v[d];
+                ofs << ',' << all_hi[q][d];
             }
             ofs << '\n';
         }
