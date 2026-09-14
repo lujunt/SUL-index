@@ -2,8 +2,10 @@
 
 #include <cmath>
 #include <fstream>
+#include <limits>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace sul::util {
 
@@ -41,18 +43,24 @@ bool is_skip(const std::string& line) {
 
 } // namespace
 
-CsvLoadResult load_csv(const std::string& path, int32_t scale) {
+// 两遍扫描：先求每维 min/max，再按列 min-max 归一化到 [0, scale-1] 整数空间。
+// 充分利用 BITS_PER_DIM 精度，避免亚整数级浮点数据被整数化坍缩到同一整数桶。
+static CsvLoadResult load_csv_impl(const std::string& path, int32_t scale,
+                                   const CsvNormalization* fixed) {
+    if (scale < 2) throw std::runtime_error("load_csv: scale must be >= 2");
     std::ifstream ifs(path);
     if (!ifs) {
         throw std::runtime_error("load_csv: cannot open " + path);
     }
 
-    CsvLoadResult result;
-    result.dim_count = 0;
-    result.data.reserve(1024);
+    // pass 1：读全部浮点行，统计 min/max
+    std::vector<std::vector<double>> raw;
+    std::vector<int32_t>             ids;
+    raw.reserve(1024);
+    ids.reserve(1024);
+    int32_t dim_count = 0;
 
-    const double  scale_d   = static_cast<double>(scale);
-    const int32_t scale_max = scale - 1;
+    std::vector<double> min_v, max_v;
 
     std::string line;
     size_t line_no = 0;
@@ -67,40 +75,100 @@ CsvLoadResult load_csv(const std::string& path, int32_t scale) {
         }
 
         int32_t dim = static_cast<int32_t>(fields.size()) - 1;
-        if (result.dim_count == 0) {
+        if (dim_count == 0) {
             if (dim < 1 || dim > MAX_DIMS) {
                 throw std::runtime_error("load_csv: dim_count=" + std::to_string(dim)
                                          + " out of [1," + std::to_string(MAX_DIMS) + "]");
             }
-            result.dim_count = dim;
-        } else if (dim != result.dim_count) {
+            dim_count = dim;
+            min_v.assign(dim,  std::numeric_limits<double>::infinity());
+            max_v.assign(dim, -std::numeric_limits<double>::infinity());
+        } else if (dim != dim_count) {
             throw std::runtime_error("load_csv: line " + std::to_string(line_no)
                                      + " has dim_count=" + std::to_string(dim)
-                                     + " expected " + std::to_string(result.dim_count));
+                                     + " expected " + std::to_string(dim_count));
         }
 
-        DataPoint dp{};
-        dp.dim_count = dim;
+        std::vector<double> row(dim);
         try {
             for (int32_t d = 0; d < dim; ++d) {
-                double v = std::stod(fields[d]);
-                int32_t iv = static_cast<int32_t>(std::floor(v * scale_d));
-                if (iv < 0)         iv = 0;
-                if (iv > scale_max) iv = scale_max;
-                dp.dimensions[d] = iv;
+                size_t used = 0;
+                double v = std::stod(fields[d], &used);
+                if (used != fields[d].size()) throw std::runtime_error("invalid coordinate suffix");
+                if (!std::isfinite(v)) throw std::runtime_error("non-finite coordinate");
+                row[d] = v;
+                if (v < min_v[d]) min_v[d] = v;
+                if (v > max_v[d]) max_v[d] = v;
             }
-            dp.orig_id = static_cast<int32_t>(std::stol(fields[dim]));
+            size_t used = 0;
+            auto id = std::stoll(fields[dim], &used);
+            if (used != fields[dim].size() || id < INT32_MIN || id > INT32_MAX)
+                throw std::runtime_error("invalid int32 record ID");
+            ids.push_back(static_cast<int32_t>(id));
         } catch (const std::exception& e) {
             throw std::runtime_error("load_csv: line " + std::to_string(line_no)
                                      + " parse error: " + e.what());
         }
+        raw.push_back(std::move(row));
+    }
+
+    if (raw.empty()) {
+        throw std::runtime_error("load_csv: no data rows in " + path);
+    }
+
+    if (fixed) {
+        if (fixed->low.size() != static_cast<size_t>(dim_count) ||
+            fixed->high.size() != static_cast<size_t>(dim_count))
+            throw std::runtime_error("load_csv: normalization dimension mismatch");
+        min_v = fixed->low;
+        max_v = fixed->high;
+        for (int32_t d = 0; d < dim_count; ++d)
+            if (!std::isfinite(min_v[d]) || !std::isfinite(max_v[d]) || min_v[d] > max_v[d])
+                throw std::runtime_error("load_csv: invalid normalization bounds");
+    }
+
+    // pass 2：按列 min-max 归一化到 [0, scale_max]
+    CsvLoadResult result;
+    result.dim_count = dim_count;
+    result.normalization = {min_v, max_v, scale};
+    result.data.reserve(raw.size());
+
+    const double  scale_d   = static_cast<double>(scale);
+    const int32_t scale_max = scale - 1;
+
+    std::vector<double> range_v(dim_count);
+    for (int32_t d = 0; d < dim_count; ++d) {
+        range_v[d] = max_v[d] - min_v[d];
+    }
+
+    for (size_t i = 0; i < raw.size(); ++i) {
+        DataPoint dp{};
+        dp.dim_count = dim_count;
+        for (int32_t d = 0; d < dim_count; ++d) {
+            if (fixed && (raw[i][d] < min_v[d] || raw[i][d] > max_v[d]))
+                throw std::runtime_error("load_csv: point outside base coordinate domain at data row "
+                                         + std::to_string(i + 1));
+            double norm = (range_v[d] > 0.0)
+                ? (raw[i][d] - min_v[d]) / range_v[d]
+                : 0.0;
+            int32_t iv = static_cast<int32_t>(std::floor(norm * scale_d));
+            if (iv < 0)         iv = 0;
+            if (iv > scale_max) iv = scale_max;
+            dp.dimensions[d] = iv;
+        }
+        dp.orig_id = ids[i];
         result.data.push_back(dp);
     }
 
-    if (result.data.empty()) {
-        throw std::runtime_error("load_csv: no data rows in " + path);
-    }
     return result;
+}
+
+CsvLoadResult load_csv(const std::string& path, int32_t scale) {
+    return load_csv_impl(path, scale, nullptr);
+}
+
+CsvLoadResult load_csv(const std::string& path, const CsvNormalization& normalization) {
+    return load_csv_impl(path, normalization.scale, &normalization);
 }
 
 } // namespace sul::util

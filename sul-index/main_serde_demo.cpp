@@ -67,7 +67,7 @@ int main(int argc, char** argv) {
 
     IndexConfig cfg;
     cfg.dim_count   = DIM;
-    cfg.error_bound = std::max<int32_t>(8, N / 1000);
+    cfg.error_bound = 4;
 
     // ---- Phase 1: 构建 ----
     std::cout << "\n=== Phase 1: 构建原始密文索引 ===\n";

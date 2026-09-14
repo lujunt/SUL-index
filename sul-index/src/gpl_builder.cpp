@@ -9,7 +9,7 @@ GPLBuilder::GPLBuilder(int32_t error_bound) : error_bound_(error_bound) {
     if (error_bound_ < 1) error_bound_ = 1;
 }
 
-void GPLBuilder::fit_least_squares(const std::vector<uint64_t>& keys,
+void GPLBuilder::fit_least_squares(const std::vector<__uint128_t>& keys,
                                    int32_t start, int32_t end,
                                    double y_scale,
                                    double& slope, double& intercept) {
@@ -39,7 +39,7 @@ void GPLBuilder::fit_least_squares(const std::vector<uint64_t>& keys,
     }
 }
 
-std::vector<Segment> GPLBuilder::gpl_partition(const std::vector<uint64_t>& keys) {
+std::vector<Segment> GPLBuilder::gpl_partition(const std::vector<__uint128_t>& keys) {
     std::vector<Segment> segments;
     int32_t n = static_cast<int32_t>(keys.size());
     int32_t i = 0;
@@ -82,7 +82,7 @@ std::vector<Segment> GPLBuilder::gpl_partition(const std::vector<uint64_t>& keys
 }
 
 int32_t GPLBuilder::find_leaf_for_key(const std::vector<GPLLeafNode>& leaves,
-                                      uint64_t key) {
+                                      __uint128_t key) {
     int32_t lo = 0;
     int32_t hi = static_cast<int32_t>(leaves.size()) - 1;
     int32_t ans = 0;
@@ -98,7 +98,7 @@ int32_t GPLBuilder::find_leaf_for_key(const std::vector<GPLLeafNode>& leaves,
     return ans;
 }
 
-GPLBuildResult GPLBuilder::build(const std::vector<uint64_t>& sorted_keys,
+GPLBuildResult GPLBuilder::build(const std::vector<__uint128_t>& sorted_keys,
                                  const std::vector<DataPoint*>& sorted_points,
                                  int32_t max_layers) {
     GPLBuildResult result;
@@ -131,7 +131,7 @@ GPLBuildResult GPLBuilder::build(const std::vector<uint64_t>& sorted_keys,
 
     for (int32_t i = 0; i < n; ++i) {
         DataPoint* dp = sorted_points[i];
-        uint64_t z = sorted_keys[i];
+        __uint128_t z = sorted_keys[i];
         int32_t leaf_idx = find_leaf_for_key(result.leaf_nodes, z);
         GPLLeafNode& leaf = result.leaf_nodes[leaf_idx];
 
@@ -150,7 +150,7 @@ GPLBuildResult GPLBuilder::build(const std::vector<uint64_t>& sorted_keys,
         }
     }
 
-    std::vector<uint64_t> child_keys;
+    std::vector<__uint128_t> child_keys;
     child_keys.reserve(result.leaf_nodes.size());
     for (const auto& leaf : result.leaf_nodes) child_keys.push_back(leaf.key);
 
@@ -175,7 +175,7 @@ GPLBuildResult GPLBuilder::build(const std::vector<uint64_t>& sorted_keys,
 
         result.inner_layers.insert(result.inner_layers.begin(), parents);
 
-        std::vector<uint64_t> next_keys;
+        std::vector<__uint128_t> next_keys;
         next_keys.reserve(parents.size());
         for (const auto& p : parents) next_keys.push_back(p.key);
         child_keys = std::move(next_keys);

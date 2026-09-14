@@ -13,12 +13,12 @@ ZOrderEncoder::ZOrderEncoder(int32_t dim_count) : dim_count_(dim_count) {
     key_len_ = bits_per_dim_ * dim_count_ / 8;           // 2D→4字节，4D→8字节，6D→12字节
 }
 
-// 将各维度低bits_per_dim_位交错编码为uint64_t（≤4维时无截断）
-uint64_t ZOrderEncoder::encode(const int32_t* coords) const {
-    uint64_t result = 0;
+// 将各维度低 bits_per_dim_ 位交错编码为 128 位（6 维 = 96 位完整保留）
+__uint128_t ZOrderEncoder::encode(const int32_t* coords) const {
+    __uint128_t result = 0;
     for (int32_t b = 0; b < bits_per_dim_; ++b) {
         for (int32_t d = 0; d < dim_count_; ++d) {
-            uint64_t bit = (static_cast<uint32_t>(coords[d]) >> b) & 1ULL;
+            __uint128_t bit = (static_cast<uint32_t>(coords[d]) >> b) & 1u;
             result |= bit << (b * dim_count_ + d);
         }
     }
@@ -41,11 +41,11 @@ void ZOrderEncoder::encode_to_bytes(const int32_t* coords, uint8_t* out) const {
     }
 }
 
-// 将uint64_t z值转为key_len字节大端序数组（字节序与encode_to_bytes一致）
-void ZOrderEncoder::to_bytes(uint64_t z, uint8_t* out, int32_t key_len) {
+// 将 128 位 z 值转为 key_len 字节大端序数组（字节序与 encode_to_bytes 一致）
+void ZOrderEncoder::to_bytes(__uint128_t z, uint8_t* out, int32_t key_len) {
     for (int32_t i = 0; i < key_len; ++i) {
         int32_t shift = (key_len - 1 - i) * 8;
-        out[i] = (shift < 64) ? static_cast<uint8_t>((z >> shift) & 0xFFULL) : 0u;
+        out[i] = (shift < 128) ? static_cast<uint8_t>((z >> shift) & 0xFFu) : 0u;
     }
 }
 

@@ -8,7 +8,9 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <limits>
 #include <random>
+#include <thread>
 #include <unordered_map>
 
 namespace sul::cipher {
@@ -38,7 +40,7 @@ void SULCipherIndex::encrypt_data_point(const DataPoint& src, EncDataPoint& dst)
     for (int32_t d = 0; d < src.dim_count; ++d)
         dst.dimensions.push_back(crypto_.encrypt_i64(src.dimensions[d]));
 
-    dst.z_value = crypto_.encrypt_i64(static_cast<int64_t>(src.z_value));
+    dst.z_value = crypto_.encrypt_u128(src.z_value);
 
     const int32_t kl = config_.key_len();
     dst.key_bytes.clear();
@@ -128,6 +130,51 @@ void SULCipherIndex::build_encrypted_mirror() {
         }
         enc_art_trees_.push_back(std::move(tree));
     }
+
+    // 填充每叶子 ciphertext coord bbox（含 GPL slots + ART 点）
+    // 用于范围查询中间叶子 OUTSIDE 剪枝；空叶子用 0 占位（不影响候选生成）
+    // 同步初始化 plain_bbox_lo_/hi_（DAP 侧明文 bbox，供 insert 增量更新）
+    const int32_t D = config_.dim_count;
+    plain_bbox_lo_.assign(enc_leaf_nodes_.size(), std::vector<int32_t>(D, 0));
+    plain_bbox_hi_.assign(enc_leaf_nodes_.size(), std::vector<int32_t>(D, 0));
+    for (size_t idx = 0; idx < enc_leaf_nodes_.size(); ++idx) {
+        EncGPLLeafNode& enc = enc_leaf_nodes_[idx];
+        const GPLLeafNode& src = plain_leaves[idx];
+        int32_t lo[MAX_DIMS], hi[MAX_DIMS];
+        for (int32_t d = 0; d < D; ++d) {
+            lo[d] = std::numeric_limits<int32_t>::max();
+            hi[d] = std::numeric_limits<int32_t>::min();
+        }
+        bool any = false;
+        auto update = [&](const int32_t* coord) {
+            for (int32_t d = 0; d < D; ++d) {
+                if (coord[d] < lo[d]) lo[d] = coord[d];
+                if (coord[d] > hi[d]) hi[d] = coord[d];
+            }
+            any = true;
+        };
+        for (int32_t p = 0; p < src.slot_count; ++p) {
+            if (src.occupied[p] && src.data_slots[p])
+                update(src.data_slots[p]->dimensions);
+        }
+        if (enc.art_tree_idx >= 0
+            && enc.art_tree_idx < static_cast<int32_t>(plain_arts.size())) {
+            for (DataPoint* dp : plain_arts[enc.art_tree_idx]->collect_all())
+                update(dp->dimensions);
+        }
+        enc.coord_lo_enc.clear();
+        enc.coord_hi_enc.clear();
+        enc.coord_lo_enc.reserve(static_cast<size_t>(D));
+        enc.coord_hi_enc.reserve(static_cast<size_t>(D));
+        for (int32_t d = 0; d < D; ++d) {
+            int32_t l = any ? lo[d] : 0;
+            int32_t h = any ? hi[d] : 0;
+            enc.coord_lo_enc.push_back(crypto_.encrypt_i64(l));
+            enc.coord_hi_enc.push_back(crypto_.encrypt_i64(h));
+            plain_bbox_lo_[idx][d] = l;
+            plain_bbox_hi_[idx][d] = h;
+        }
+    }
 }
 
 // ============================================================================
@@ -138,7 +185,7 @@ void SULCipherIndex::build_encrypted_mirror() {
 //   DAP: 解密 marker 找零位置
 // 简化：OSM 用于计入开销；目标 child_rel 由明文模型计算
 // ============================================================================
-int32_t SULCipherIndex::sqqp(uint64_t plain_v) {
+int32_t SULCipherIndex::sqqp(__uint128_t plain_v) {
     if (enc_leaf_nodes_.empty()) return -1;
     if (enc_inner_layers_.empty()) {
         return plain_.locate_leaf_for_cipher(plain_v);
@@ -152,7 +199,7 @@ int32_t SULCipherIndex::sqqp(uint64_t plain_v) {
         const GPLInnerNode&    pl_node  = plain_.inner_layers()[layer][cur_idx];
 
         // DSP: OSM 模拟开销（消耗 1 解密 + 1 加密）
-        ophelib::Integer v_int(static_cast<long>(plain_v));
+        ophelib::Integer v_int = CryptoContext::u128_to_integer(plain_v);
         ophelib::Integer slope_int = crypto_.scale_float(pl_node.slope);
         Ciphertext osm_out = OSMrun(v_int, slope_int, crypto_.paillier());
         (void)osm_out;
@@ -214,7 +261,7 @@ EncDataPoint* SULCipherIndex::point_query_with_stats(const int32_t* coords,
     using clk = std::chrono::steady_clock;
     auto t_start = clk::now();
 
-    uint64_t z = encoder_.encode(coords);
+    __uint128_t z = encoder_.encode(coords);
     int32_t leaf_idx = sqqp(z);
     if (leaf_idx < 0) {
         if (stats) {
@@ -236,7 +283,7 @@ EncDataPoint* SULCipherIndex::point_query_with_stats(const int32_t* coords,
     int32_t lo = clamp_int(pos - config_.error_bound, 0, pl_leaf.slot_count - 1);
     int32_t hi = clamp_int(pos + config_.error_bound, 0, pl_leaf.slot_count - 1);
 
-    Ciphertext enc_z = crypto_.encrypt_i64(static_cast<int64_t>(z));
+    Ciphertext enc_z = crypto_.encrypt_u128(z);
     for (int32_t p = lo; p <= hi; ++p) {
         if (!enc_leaf.occupied[p] || !enc_leaf.data_slots[p]) continue;
         Integer le = SICrun(enc_z, enc_leaf.data_slots[p]->z_value, crypto_.paillier());
@@ -285,19 +332,37 @@ std::vector<EncDataPoint*> SULCipherIndex::range_query(const int32_t* low,
 
 std::vector<EncDataPoint*> SULCipherIndex::range_query_with_stats(
         const int32_t* low, const int32_t* high, QueryStats* stats) {
+    return range_query_impl(low, high, stats, true);
+}
+
+size_t SULCipherIndex::count_range_candidates(const int32_t* low, const int32_t* high,
+                                            QueryStats* stats) {
+    QueryStats local{};
+    if (!stats) stats = &local;
+    range_query_impl(low, high, stats, false);
+    return stats->candidates_total;
+}
+
+std::vector<EncDataPoint*> SULCipherIndex::range_query_impl(
+        const int32_t* low, const int32_t* high, QueryStats* stats, bool filter_candidates) {
     using clk = std::chrono::steady_clock;
     auto t_start = clk::now();
 
     std::vector<EncDataPoint*> result;
     if (enc_leaf_nodes_.empty()) {
-        if (stats) { stats->learning_us = stats->art_us = 0.0;
-                     stats->hit_learning = stats->hit_art = false; }
+        if (stats) {
+            stats->learning_us = stats->art_us = 0.0;
+            stats->collect_us = stats->spi_setup_us = stats->spi_filter_us = 0.0;
+            stats->candidates_total = stats->candidates_kept = 0;
+            stats->middle_leaves_total = stats->middle_leaves_pruned = 0;
+            stats->hit_learning = stats->hit_art = false;
+        }
         return result;
     }
 
     const int32_t kl = config_.key_len();
-    uint64_t z_lo = encoder_.encode(low);
-    uint64_t z_hi = encoder_.encode(high);
+    __uint128_t z_lo = encoder_.encode(low);
+    __uint128_t z_hi = encoder_.encode(high);
     if (z_lo > z_hi) std::swap(z_lo, z_hi);
 
     uint8_t kb_lo[MAX_KEY_BYTES] = {};
@@ -312,6 +377,9 @@ std::vector<EncDataPoint*> SULCipherIndex::range_query_with_stats(
             stats->learning_us = std::chrono::duration<double, std::micro>(
                                      clk::now() - t_start).count();
             stats->art_us = 0.0;
+            stats->collect_us = stats->spi_setup_us = stats->spi_filter_us = 0.0;
+            stats->candidates_total = stats->candidates_kept = 0;
+            stats->middle_leaves_total = stats->middle_leaves_pruned = 0;
             stats->hit_learning = stats->hit_art = false;
         }
         return result;
@@ -320,28 +388,53 @@ std::vector<EncDataPoint*> SULCipherIndex::range_query_with_stats(
 
     auto t_after_learning = clk::now();
 
-    const GPLLeafNode& pl_left  = plain_.leaf_nodes()[left];
-    const GPLLeafNode& pl_right = plain_.leaf_nodes()[right];
-    auto predict_pos = [](const GPLLeafNode& leaf, uint64_t z) {
-        double p = leaf.slope * static_cast<double>(z) + leaf.intercept;
-        return clamp_int(static_cast<int32_t>(std::floor(p)), 0, leaf.slot_count - 1);
-    };
-    int32_t lefid = predict_pos(pl_left,  z_lo);
-    int32_t rigid = predict_pos(pl_right, z_hi);
+    // 把 query [low, high] 加密前置：bbox SIC 检查与 SPI 共用同一份密文
+    std::vector<Ciphertext> enc_ql, enc_qr;
+    enc_ql.reserve(config_.dim_count);
+    enc_qr.reserve(config_.dim_count);
+    for (int32_t d = 0; d < config_.dim_count; ++d) {
+        enc_ql.push_back(crypto_.encrypt_i64(low[d]));
+        enc_qr.push_back(crypto_.encrypt_i64(high[d]));
+    }
+    auto t_after_spi_setup = clk::now();
 
     std::vector<EncDataPoint*> candidates;
+    size_t middle_total  = 0;
+    size_t middle_pruned = 0;
+
+    // Layer 1 OUTSIDE 剪枝（密文版）：用 SIC 判定 bbox 与 [low,high] 是否任一维不相交
+    //   per-dim：cmp_low_in = SIC(enc_ql[d], coord_hi_enc[d])  → 期望 1 (low <= hi)
+    //            cmp_hi_in  = SIC(coord_lo_enc[d], enc_qr[d])  → 期望 1 (lo  <= high)
+    //   两次 SIC 并行（cmp_hi_in 在额外线程，cmp_low_in 在主线程），任一不为 1 → OUTSIDE
+    //   跨维顺序循环保留早返回（dim 0 OUTSIDE 则不进入 dim 1）
+    // Note: cipher bbox 由 insert 路径增量同步（plain_bbox_lo_/hi_ 驱动），保证 sound
+    auto leaf_outside = [&](const EncGPLLeafNode& leaf) -> bool {
+        for (int32_t d = 0; d < config_.dim_count; ++d) {
+            Integer cmp_low_in;
+            Integer cmp_hi_in;
+            std::thread t_hi([&]() {
+                cmp_hi_in = SICrun(leaf.coord_lo_enc[d], enc_qr[d], crypto_.paillier());
+            });
+            cmp_low_in = SICrun(enc_ql[d], leaf.coord_hi_enc[d], crypto_.paillier());
+            t_hi.join();
+            if (cmp_low_in != 1 || cmp_hi_in != 1) return true;
+        }
+        return false;
+    };
 
     if (left == right) {
-        int32_t lp = std::min(lefid, rigid), hp = std::max(lefid, rigid);
-        for (int32_t p = lp; p <= hp; ++p)
+        // 收集叶子中所有有效槽位（不按 z 值过滤）：与 plain 端 collect_leaf_slots_all 对齐
+        // Z-曲线在位翻转处不连续，矩形 [low,high] 内的点其 z 值不一定 ∈ [z_lo, z_hi]，
+        // 按 lefid/rigid 截断会漏点；由后段 SPI 维度坐标精滤兜底正确性
+        for (int32_t p = 0; p < enc_leaf_nodes_[left].slot_count; ++p)
             if (enc_leaf_nodes_[left].occupied[p] && enc_leaf_nodes_[left].data_slots[p])
                 candidates.push_back(enc_leaf_nodes_[left].data_slots[p]);
         EncARTTree* art = enc_art_trees_[enc_leaf_nodes_[left].art_tree_idx].get();
         if (art && !art->empty())
             for (auto* p : art->range_search(kb_lo, kb_hi)) candidates.push_back(p);
     } else {
-        // 左叶子
-        for (int32_t p = lefid; p < enc_leaf_nodes_[left].slot_count; ++p)
+        // 左叶子：扫所有槽位（与 plain 一致，避免 Z-曲线漏点）
+        for (int32_t p = 0; p < enc_leaf_nodes_[left].slot_count; ++p)
             if (enc_leaf_nodes_[left].occupied[p] && enc_leaf_nodes_[left].data_slots[p])
                 candidates.push_back(enc_leaf_nodes_[left].data_slots[p]);
         {
@@ -352,17 +445,23 @@ std::vector<EncDataPoint*> SULCipherIndex::range_query_with_stats(
                 for (auto* p : art->range_search(kb_lo, kb_max)) candidates.push_back(p);
             }
         }
-        // 中间叶子：全量收
+        // 中间叶子：bbox OUTSIDE 剪枝 → 跳过；否则全量收（bbox 由 insert 同步维护）
         for (int32_t i = left + 1; i < right; ++i) {
-            for (int32_t p = 0; p < enc_leaf_nodes_[i].slot_count; ++p)
-                if (enc_leaf_nodes_[i].occupied[p] && enc_leaf_nodes_[i].data_slots[p])
-                    candidates.push_back(enc_leaf_nodes_[i].data_slots[p]);
-            EncARTTree* art = enc_art_trees_[enc_leaf_nodes_[i].art_tree_idx].get();
+            ++middle_total;
+            const EncGPLLeafNode& mleaf = enc_leaf_nodes_[i];
+            if (leaf_outside(mleaf)) {
+                ++middle_pruned;
+                continue;
+            }
+            for (int32_t p = 0; p < mleaf.slot_count; ++p)
+                if (mleaf.occupied[p] && mleaf.data_slots[p])
+                    candidates.push_back(mleaf.data_slots[p]);
+            EncARTTree* art = enc_art_trees_[mleaf.art_tree_idx].get();
             if (art && !art->empty())
                 for (auto* p : art->collect_all()) candidates.push_back(p);
         }
-        // 右叶子
-        for (int32_t p = 0; p <= rigid; ++p)
+        // 右叶子：扫所有槽位（与 plain 一致，避免 Z-曲线漏点）
+        for (int32_t p = 0; p < enc_leaf_nodes_[right].slot_count; ++p)
             if (enc_leaf_nodes_[right].occupied[p] && enc_leaf_nodes_[right].data_slots[p])
                 candidates.push_back(enc_leaf_nodes_[right].data_slots[p]);
         {
@@ -374,24 +473,32 @@ std::vector<EncDataPoint*> SULCipherIndex::range_query_with_stats(
         }
     }
 
-    // SPI 过滤
-    std::vector<Ciphertext> enc_ql, enc_qr;
-    enc_ql.reserve(config_.dim_count);
-    enc_qr.reserve(config_.dim_count);
-    for (int32_t d = 0; d < config_.dim_count; ++d) {
-        enc_ql.push_back(crypto_.encrypt_i64(low[d]));
-        enc_qr.push_back(crypto_.encrypt_i64(high[d]));
+    auto t_after_collect = clk::now();
+
+    // SPI 过滤（enc_ql/enc_qr 已在 bbox 检查前加密好，直接复用）
+    if (filter_candidates) {
+        for (EncDataPoint* edp : candidates) {
+            if (SPIrun(edp->dimensions, enc_ql, enc_qr, crypto_.paillier()) == 1)
+                result.push_back(edp);
+        }
     }
-    for (EncDataPoint* edp : candidates) {
-        if (SPIrun(edp->dimensions, enc_ql, enc_qr, crypto_.paillier()) == 1)
-            result.push_back(edp);
-    }
+    auto t_end = clk::now();
 
     if (stats) {
         stats->learning_us = std::chrono::duration<double, std::micro>(
                                  t_after_learning - t_start).count();
-        stats->art_us      = std::chrono::duration<double, std::micro>(
-                                 clk::now() - t_after_learning).count();
+        stats->spi_setup_us  = std::chrono::duration<double, std::micro>(
+                                 t_after_spi_setup - t_after_learning).count();
+        stats->collect_us  = std::chrono::duration<double, std::micro>(
+                                 t_after_collect - t_after_spi_setup).count();
+        stats->spi_filter_us = filter_candidates ? std::chrono::duration<double, std::micro>(
+                                 t_end - t_after_collect).count() : 0.0;
+        stats->art_us = stats->collect_us + stats->spi_setup_us
+                      + stats->spi_filter_us;
+        stats->candidates_total = candidates.size();
+        stats->candidates_kept  = result.size();
+        stats->middle_leaves_total  = middle_total;
+        stats->middle_leaves_pruned = middle_pruned;
         stats->hit_learning = false;
         stats->hit_art      = !result.empty();
     }
@@ -430,6 +537,23 @@ InsertResult SULCipherIndex::insert(const int32_t* coords) {
 
     EncGPLLeafNode& enc_leaf = enc_leaf_nodes_[leaf_idx];
     const GPLLeafNode& pl_leaf = plain_.leaf_nodes()[leaf_idx];
+
+    // 同步更新 leaf bbox：若新点扩张 plain_bbox 任一维，则 re-encrypt 对应 cipher bbox
+    // 维护 leaf_outside 中间叶子剪枝的正确性（每次 insert 至多 dim*2 次 Paillier 加密）
+    if (static_cast<size_t>(leaf_idx) < plain_bbox_lo_.size()) {
+        auto& bb_lo = plain_bbox_lo_[leaf_idx];
+        auto& bb_hi = plain_bbox_hi_[leaf_idx];
+        for (int32_t d = 0; d < config_.dim_count; ++d) {
+            if (coords[d] < bb_lo[d]) {
+                bb_lo[d] = coords[d];
+                enc_leaf.coord_lo_enc[d] = crypto_.encrypt_i64(coords[d]);
+            }
+            if (coords[d] > bb_hi[d]) {
+                bb_hi[d] = coords[d];
+                enc_leaf.coord_hi_enc[d] = crypto_.encrypt_i64(coords[d]);
+            }
+        }
+    }
     double predicted = pl_leaf.slope * static_cast<double>(stub.z_value) + pl_leaf.intercept;
     int32_t pos = clamp_int(static_cast<int32_t>(std::floor(predicted)),
                             0, pl_leaf.slot_count - 1);

@@ -24,22 +24,22 @@ class GPLBuilder {
 public:
     explicit GPLBuilder(int32_t error_bound);
 
-    GPLBuildResult build(const std::vector<uint64_t>& sorted_keys,
+    GPLBuildResult build(const std::vector<__uint128_t>& sorted_keys,
                          const std::vector<DataPoint*>& sorted_points,
                          int32_t max_layers);
 
 private:
     int32_t error_bound_;
 
-    std::vector<Segment> gpl_partition(const std::vector<uint64_t>& keys);
+    std::vector<Segment> gpl_partition(const std::vector<__uint128_t>& keys);
 
-    static void fit_least_squares(const std::vector<uint64_t>& keys,
+    static void fit_least_squares(const std::vector<__uint128_t>& keys,
                                   int32_t start, int32_t end,
                                   double y_scale,
                                   double& slope, double& intercept);
 
     static int32_t find_leaf_for_key(const std::vector<GPLLeafNode>& leaves,
-                                     uint64_t key);
+                                     __uint128_t key);
 };
 
 }

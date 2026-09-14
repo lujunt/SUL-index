@@ -49,6 +49,11 @@ struct EncGPLLeafNode {
     int32_t slot_count    = 0;
     int32_t filled_count  = 0;
     int32_t art_tree_idx  = -1;
+    // ciphertext coord bbox：含本叶子所有 GPL 槽位 + ART 子树点
+    // 用于范围查询中间叶子 OUTSIDE 剪枝（通过 SIC 完成比较，不向 DSP 泄露 coord 范围）
+    // 大小 = config_.dim_count
+    std::vector<Ciphertext> coord_lo_enc;
+    std::vector<Ciphertext> coord_hi_enc;
 };
 
 // ============================================================================
@@ -60,6 +65,7 @@ struct EncARTNodeHeader { ARTNodeType type; };
 struct EncARTLeaf {
     EncARTNodeHeader header;
     EncDataPoint*    data_point;
+    std::vector<EncDataPoint*> duplicates;
 };
 
 // 注：plain_keys 是 DAP 私有视图（与 keys[] 一一对应），

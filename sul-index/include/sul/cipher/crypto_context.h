@@ -24,8 +24,12 @@ public:
 
     // 整数 ↔ 密文
     ophelib::Ciphertext encrypt_i64(int64_t v) const;
+    ophelib::Ciphertext encrypt_u128(__uint128_t v) const;  // 128 位无符号（z_value）
     ophelib::Ciphertext encrypt_int(const ophelib::Integer& v) const;
     ophelib::Integer    decrypt(const ophelib::Ciphertext& ct) const;
+
+    // 工具：__uint128_t → ophelib::Integer（hex 字符串构造）
+    static ophelib::Integer u128_to_integer(__uint128_t v);
 
     // 浮点 ↔ 缩放整数（用于 slope / intercept 编码）
     ophelib::Integer scale_float(double v) const;

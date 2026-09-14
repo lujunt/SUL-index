@@ -91,4 +91,24 @@ if(BUILD_CIPHER)
     # 更新对比 demo：按 ul% 批量插入并对比更新后查询
     add_executable(sul_update main_update.cpp)
     target_link_libraries(sul_update PRIVATE sul_cipher_index)
+
+endif()
+
+include(CTest)
+if(BUILD_TESTING)
+    add_executable(sul_retrain_unit tests/retrain_unit.cpp)
+    target_link_libraries(sul_retrain_unit PRIVATE sul_index)
+    add_test(NAME retrain_unit COMMAND sul_retrain_unit ${CMAKE_CURRENT_BINARY_DIR}/test_data/retrain_unit)
+    if(BUILD_CIPHER)
+        add_executable(sul_candidate_count tests/candidate_count.cpp)
+        target_link_libraries(sul_candidate_count PRIVATE sul_cipher_index)
+        add_test(NAME candidate_count COMMAND sul_candidate_count ${CMAKE_CURRENT_BINARY_DIR}/test_data/candidate_count.scidx)
+        find_package(Python3 COMPONENTS Interpreter REQUIRED)
+        add_test(NAME retrain_cipher COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_retrain.py $<TARGET_FILE:sul_update>)
+        set_tests_properties(retrain_cipher PROPERTIES TIMEOUT 180)
+        add_test(NAME retrain_ul_matrix COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ul_matrix.py
+            ${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_retrain_ul_matrix.py)
+    endif()
 endif()

@@ -28,7 +28,7 @@ QueryFile load_query_file(const std::string& path, int32_t scale = 65536);
 // 例：datasets/uniform_20000_1_2_.csv → "uniform_20000"
 //     datasets/skewed_20000_4_2_.csv  → "skewed_20000"
 //     a.csv                           → "a"
-// 用于跨工具一致命名：query/<stem>_<ratio>.csv 与 indexes/index_<stem>_K..._N....scidx
+// 用于跨工具一致命名：query/<stem>_dim{d}_<ratio>.csv 与 indexes/index_<stem>_K..._dim....scidx
 std::string dataset_stem(const std::string& dataset_path);
 
 // 生成 5 个查询窗口文件到 output_dir
@@ -42,8 +42,9 @@ std::string dataset_stem(const std::string& dataset_path);
 //     · true ：对每个 center 二分搜索 edge，使实测命中数落入
 //              [target × (1 - tol), target × (1 + tol)]，target = round(N × ratio)，
 //              tol = 5%；30 轮收敛失败则保留最接近的 edge（尽力而为 + 警告）
-//   - 文件名：<stem>_<ratio_pct>.csv
+//   - 文件名：<stem>_dim{d}_<ratio_pct>.csv
 //     stem 由 dataset 文件名前两个下划线分量构成，例：uniform_20000_1_2_.csv → uniform_20000
+//     dim 由 dataset 实际维度推断（避免不同维度生成的查询互相覆盖；放中间不影响下游 ratio 解析）
 //   - 写入格式与 load_query_file 兼容（浮点 [0,1)）
 //
 // 返回成功写入的文件数（正常为 5）

@@ -1,6 +1,7 @@
 #include "sul/cipher/crypto_context.h"
 
 #include <cmath>
+#include <cstdio>
 
 // agreements/OSM.cpp 和 agreements/SIC.cpp 使用的全局加密 0/1 密文
 // 这两个 extern 变量由 CryptoContext 构造时填充
@@ -34,6 +35,26 @@ CryptoContext::CryptoContext(int /*key_size*/, const ophelib::KeyPair& kp) {
 
 ophelib::Ciphertext CryptoContext::encrypt_i64(int64_t v) const {
     return paillier_->encrypt(ophelib::Integer(static_cast<long>(v)));
+}
+
+ophelib::Integer CryptoContext::u128_to_integer(__uint128_t v) {
+    // hex 字符串：每 64 位最多 16 个十六进制字符
+    if (v == 0) return ophelib::Integer(0);
+    uint64_t hi = static_cast<uint64_t>(v >> 64);
+    uint64_t lo = static_cast<uint64_t>(v);
+    char buf[40];
+    if (hi == 0) {
+        std::snprintf(buf, sizeof(buf), "%lx", static_cast<unsigned long>(lo));
+    } else {
+        std::snprintf(buf, sizeof(buf), "%lx%016lx",
+                      static_cast<unsigned long>(hi),
+                      static_cast<unsigned long>(lo));
+    }
+    return ophelib::Integer(buf, 16);
+}
+
+ophelib::Ciphertext CryptoContext::encrypt_u128(__uint128_t v) const {
+    return paillier_->encrypt(u128_to_integer(v));
 }
 
 ophelib::Ciphertext CryptoContext::encrypt_int(const ophelib::Integer& v) const {

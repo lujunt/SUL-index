@@ -37,9 +37,20 @@ public:
     void bulk_load(std::vector<DataPoint> points);
 
     // 查询耗时拆分（微秒）
+    // 范围查询下 art_us = collect_us + spi_setup_us + spi_filter_us
+    // 点查询只填 learning_us / art_us（新字段保持 0）
     struct QueryStats {
         double learning_us = 0.0;  // GPL/SQQP + 学习层叶子槽位扫描
-        double art_us      = 0.0;  // ART/SARTQ + 候选合并 + SPI 过滤
+        double art_us      = 0.0;  // ART/SARTQ + 候选合并 + SPI 过滤（总和）
+        // —— 范围查询专用细分（点查询路径保持 0） ——
+        double collect_us    = 0.0; // 候选收集（含中间叶子的密文 bbox/SIC 剪枝）
+        double spi_setup_us  = 0.0; // ART 桶内：加密 query [low,high]（dim 次 Paillier 加密）
+        double spi_filter_us = 0.0; // ART 桶内：逐 candidate 跑 SPIrun
+        size_t candidates_total = 0; // SPI 评估前的候选点数
+        size_t candidates_kept  = 0; // SPI 通过的点数（= 结果集大小）
+        // —— Layer 1 OUTSIDE 剪枝统计 ——
+        size_t middle_leaves_total  = 0; // 跨叶子查询时的中间叶子总数
+        size_t middle_leaves_pruned = 0; // 因 coord-bbox OUTSIDE 而跳过的中间叶子数
         bool   hit_learning = false;
         bool   hit_art      = false;
     };
@@ -59,6 +70,10 @@ public:
     std::vector<EncDataPoint*> range_query_with_stats(const int32_t* low,
                                                       const int32_t* high,
                                                       QueryStats* stats);
+
+    // 与完整查询共用候选收集及密文 bbox 剪枝；跳过 SPI，不返回命中统计。
+    size_t count_range_candidates(const int32_t* low, const int32_t* high,
+                                  QueryStats* stats = nullptr);
 
     // 安全插入：先 SQQP 定位，再走学习层或 ART 层
     InsertResult insert(const int32_t* coords);
@@ -93,6 +108,8 @@ public:
     bool is_loaded() const { return is_loaded_; }
 
 private:
+    std::vector<EncDataPoint*> range_query_impl(const int32_t* low, const int32_t* high,
+                                               QueryStats* stats, bool filter_candidates);
     IndexConfig    config_;
     CryptoContext& crypto_;
     ZOrderEncoder  encoder_;
@@ -106,6 +123,11 @@ private:
     std::vector<std::unique_ptr<EncDataPoint>> enc_points_;
     std::vector<std::unique_ptr<EncDataPoint>> enc_inserted_points_;
 
+    // 每叶子的明文 bbox（仅 DAP 侧持有，用于 insert 增量同步 cipher 加密 bbox）
+    // size = leaf_count × dim_count
+    std::vector<std::vector<int32_t>> plain_bbox_lo_;
+    std::vector<std::vector<int32_t>> plain_bbox_hi_;
+
     // 反序列化加载后置为 true：insert 直接拒绝（plain 骨架不持有 DataPoint）
     bool is_loaded_ = false;
 
@@ -113,7 +135,7 @@ private:
     void build_encrypted_mirror();
 
     // SQQP：返回目标叶子下标 leaf_idx
-    int32_t sqqp(uint64_t plain_v);
+    int32_t sqqp(__uint128_t plain_v);
 
     // SARTQ：在指定 ART 树上对加密 key_bytes 做安全点查询
     EncDataPoint* sartq(int32_t art_tree_idx,

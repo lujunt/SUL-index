@@ -38,7 +38,7 @@ void SULPlainIndex::bulk_load(std::vector<DataPoint> points) {
                   return a.z_value < b.z_value;
               });
 
-    std::vector<uint64_t> sorted_keys;
+    std::vector<__uint128_t> sorted_keys;
     std::vector<DataPoint*> sorted_ptrs;
     sorted_keys.reserve(all_points_.size());
     sorted_ptrs.reserve(all_points_.size());
@@ -75,7 +75,7 @@ void SULPlainIndex::bulk_load(std::vector<DataPoint> points) {
 }
 
 // 用GPL多层模型定位z值所在的叶子节点下标
-int32_t SULPlainIndex::locate_leaf(uint64_t z_value) const {
+int32_t SULPlainIndex::locate_leaf(__uint128_t z_value) const {
     if (leaf_nodes_.empty()) return -1;
 
     if (inner_layers_.empty()) {
@@ -113,7 +113,7 @@ int32_t SULPlainIndex::locate_leaf(uint64_t z_value) const {
 }
 
 // 在GPL叶子的槽位范围[pos-ε, pos+ε]内搜索匹配z值的数据点
-DataPoint* SULPlainIndex::search_leaf_for_zvalue(int32_t leaf_idx, uint64_t z_value) const {
+DataPoint* SULPlainIndex::search_leaf_for_zvalue(int32_t leaf_idx, __uint128_t z_value) const {
     const GPLLeafNode& leaf = leaf_nodes_[leaf_idx];
     double predicted = leaf.slope * static_cast<double>(z_value) + leaf.intercept;
     int32_t pos = clamp_int(static_cast<int32_t>(std::floor(predicted)), 0, leaf.slot_count - 1);
@@ -130,7 +130,7 @@ DataPoint* SULPlainIndex::search_leaf_for_zvalue(int32_t leaf_idx, uint64_t z_va
 }
 
 DataPoint* SULPlainIndex::point_query(const int32_t* coords) const {
-    uint64_t z = encoder_.encode(coords);
+    __uint128_t z = encoder_.encode(coords);
     int32_t leaf_idx = locate_leaf(z);
     if (leaf_idx < 0) return nullptr;
 
@@ -166,8 +166,8 @@ std::vector<DataPoint*> SULPlainIndex::range_query(const int32_t* low,
     if (leaf_nodes_.empty()) return result;
 
     // 将查询边界编码为z值和ART key
-    uint64_t z_lo = encoder_.encode(low);
-    uint64_t z_hi = encoder_.encode(high);
+    __uint128_t z_lo = encoder_.encode(low);
+    __uint128_t z_hi = encoder_.encode(high);
     if (z_lo > z_hi) std::swap(z_lo, z_hi);
 
     const int32_t kl = config_.key_len();
@@ -270,7 +270,7 @@ size_t SULPlainIndex::learning_layer_filled() const {
 
 size_t SULPlainIndex::art_layer_points() const {
     size_t total = 0;
-    for (const auto& a : art_trees_) total += a->leaf_count();
+    for (const auto& a : art_trees_) total += a->collect_all().size();
     return total;
 }
 

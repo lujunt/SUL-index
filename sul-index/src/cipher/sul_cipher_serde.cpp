@@ -2,7 +2,7 @@
 //
 // 文件格式（二进制，小端）：
 //   Magic        : "SCIDX002"  (8B)   v2: Integer 改为 raw big-endian 字节
-//   Version      : u32 = 2
+//   Version      : u32 = 6（读取兼容 v5；v6 增加 ART 同键记录列表）
 //   KeySize      : u32  Paillier 密钥位数
 //   SCALE        : i32  浮点缩放常量（应等于 CryptoContext::SCALE）
 //   IndexConfig  : error_bound(i32) max_layers(i32) dim_count(i32)
@@ -43,7 +43,7 @@
 //       per tree: has_root(u8)
 //         if has_root: pre-order walk
 //           type(u8)
-//           AT_LEAF: pool_id(i32)
+//           AT_LEAF: pool_id(i32), duplicate_count(u64), duplicate_pool_ids(i32[])
 //           AT_NODE*: 4/16/48/256 个槽
 //             present(u8); 若 present: plain_key(u8) key(ct) child_id(ct) 然后递归子节点
 //
@@ -155,6 +155,8 @@ void save_art_subtree(std::ostream& os, void* node,
         auto it = pool_idx.find(n->data_point);
         int32_t pid = (it == pool_idx.end()) ? -1 : it->second;
         write_pod<int32_t>(os, pid);
+        write_pod<uint64_t>(os, n->duplicates.size());
+        for (auto* duplicate : n->duplicates) write_pod<int32_t>(os, pool_idx.at(duplicate));
         return;
     }
 
@@ -240,6 +242,7 @@ struct ArtLoadContext {
     const ophelib::Ciphertext& enc_zero;
     const std::shared_ptr<ophelib::Integer>& n2_shared;
     const std::shared_ptr<ophelib::FastMod>& fast_mod;
+    uint32_t version;
     size_t inner_count = 0;
     size_t leaf_count  = 0;
 };
@@ -293,6 +296,18 @@ void* load_art_subtree(std::istream& is, ArtLoadContext& ctx) {
         leaf->header.type = AT_LEAF;
         leaf->data_point  = (pid >= 0 && pid < static_cast<int32_t>(ctx.pool.size()))
                           ? ctx.pool[pid] : nullptr;
+        if (ctx.version >= 6) {
+            const auto count = read_pod<uint64_t>(is);
+            if (count > ctx.pool.size()) { delete leaf; throw std::runtime_error("scidx: invalid duplicate count"); }
+            for (uint64_t i = 0; i < count; ++i) {
+                const auto duplicate_id = read_pod<int32_t>(is);
+                if (duplicate_id < 0 || static_cast<size_t>(duplicate_id) >= ctx.pool.size()) {
+                    delete leaf;
+                    throw std::runtime_error("scidx: invalid duplicate pool id");
+                }
+                leaf->duplicates.push_back(ctx.pool[duplicate_id]);
+            }
+        }
         ++ctx.leaf_count;
         return leaf;
     }
@@ -320,9 +335,12 @@ void* load_art_subtree(std::istream& is, ArtLoadContext& ctx) {
 
 // v1 (SCIDX001) 使用 hex 字符串保存 Integer；
 // v2 (SCIDX002) 改为 raw big-endian 字节（约腰斩文件体积）。
-// 旧 v1 文件读入时会在 magic 校验阶段被 load_from_file 直接 throw 拒绝。
-constexpr char kMagic[8] = {'S','C','I','D','X','0','0','2'};
-constexpr uint32_t kVersion = 2;
+// v3 (SCIDX003) 每叶子新增 plaintext coord bbox（2*dim_count*4 字节）。
+// v4 (SCIDX004) bbox 改为 Paillier 密文；用 SIC 在密文域做 OUTSIDE 判定。
+// v5 (SCIDX005) z_value 升级到 128 位：plain GPL 节点 key 由 8 字节 → 16 字节
+//               （hi64+lo64）。修复 d≥5 时 z 截断导致的候选爆炸。不兼容 v4。
+constexpr char kMagic[8] = {'S','C','I','D','X','0','0','5'};
+constexpr uint32_t kVersion = 6; // v6: ART 重复键记录列表；仍可读取 v5
 
 } // namespace
 
@@ -360,7 +378,9 @@ void SULCipherIndex::save_to_file(const std::string& path) const {
     for (const auto& layer : plain_inner) {
         write_pod<uint32_t>(os, static_cast<uint32_t>(layer.size()));
         for (const auto& node : layer) {
-            write_pod<uint64_t>(os, node.key);
+            // v5: 128 位 key = hi64 + lo64
+            write_pod<uint64_t>(os, static_cast<uint64_t>(node.key >> 64));
+            write_pod<uint64_t>(os, static_cast<uint64_t>(node.key));
             write_pod<double>(os, node.slope);
             write_pod<double>(os, node.intercept);
             write_pod<int32_t>(os, node.child_start);
@@ -370,7 +390,9 @@ void SULCipherIndex::save_to_file(const std::string& path) const {
     const auto& plain_leaves = plain_.leaf_nodes();
     write_pod<uint32_t>(os, static_cast<uint32_t>(plain_leaves.size()));
     for (const auto& leaf : plain_leaves) {
-        write_pod<uint64_t>(os, leaf.key);
+        // v5: 128 位 key
+        write_pod<uint64_t>(os, static_cast<uint64_t>(leaf.key >> 64));
+        write_pod<uint64_t>(os, static_cast<uint64_t>(leaf.key));
         write_pod<double>(os, leaf.slope);
         write_pod<double>(os, leaf.intercept);
         write_pod<int32_t>(os, leaf.slot_count);
@@ -421,6 +443,11 @@ void SULCipherIndex::save_to_file(const std::string& path) const {
         write_ct(os, leaf.slope);
         write_ct(os, leaf.intercept);
         write_pod<int32_t>(os, leaf.art_tree_idx);
+        // v4: ciphertext coord bbox (含 GPL slots + ART 点)
+        for (int32_t d = 0; d < config_.dim_count; ++d)
+            write_ct(os, leaf.coord_lo_enc[d]);
+        for (int32_t d = 0; d < config_.dim_count; ++d)
+            write_ct(os, leaf.coord_hi_enc[d]);
         for (int32_t p = 0; p < leaf.slot_count; ++p) {
             EncDataPoint* edp = leaf.data_slots[p];
             int32_t s_pid = -1;
@@ -457,7 +484,7 @@ SULCipherIndex::load_from_file(const std::string& path) {
     if (std::memcmp(magic, kMagic, sizeof(magic)) != 0)
         throw std::runtime_error("scidx: magic 不匹配 " + path);
     uint32_t version = read_pod<uint32_t>(is);
-    if (version != kVersion) throw std::runtime_error("scidx: 不支持的版本");
+    if (version != 5 && version != kVersion) throw std::runtime_error("scidx: 不支持的版本");
     uint32_t key_size = read_pod<uint32_t>(is);
     int32_t  scale_on_disk = read_pod<int32_t>(is);
     if (scale_on_disk != CryptoContext::SCALE)
@@ -498,7 +525,10 @@ SULCipherIndex::load_from_file(const std::string& path) {
         inner_layers[L].resize(n_nodes);
         for (uint32_t i = 0; i < n_nodes; ++i) {
             GPLInnerNode& node = inner_layers[L][i];
-            node.key         = read_pod<uint64_t>(is);
+            // v5: 128 位 key = hi64 + lo64
+            uint64_t hi = read_pod<uint64_t>(is);
+            uint64_t lo = read_pod<uint64_t>(is);
+            node.key         = (static_cast<__uint128_t>(hi) << 64) | lo;
             node.slope       = read_pod<double>(is);
             node.intercept   = read_pod<double>(is);
             node.child_start = read_pod<int32_t>(is);
@@ -509,7 +539,10 @@ SULCipherIndex::load_from_file(const std::string& path) {
     std::vector<GPLLeafNode> leaves(n_leaves);
     for (uint32_t i = 0; i < n_leaves; ++i) {
         GPLLeafNode& leaf = leaves[i];
-        leaf.key          = read_pod<uint64_t>(is);
+        // v5: 128 位 key
+        uint64_t hi = read_pod<uint64_t>(is);
+        uint64_t lo = read_pod<uint64_t>(is);
+        leaf.key          = (static_cast<__uint128_t>(hi) << 64) | lo;
         leaf.slope        = read_pod<double>(is);
         leaf.intercept    = read_pod<double>(is);
         leaf.slot_count   = read_pod<int32_t>(is);
@@ -579,6 +612,15 @@ SULCipherIndex::load_from_file(const std::string& path) {
         leaf.slope     = read_ct(is, n2_shared, fast_mod);
         leaf.intercept = read_ct(is, n2_shared, fast_mod);
         leaf.art_tree_idx = read_pod<int32_t>(is);
+        // v4: ciphertext coord bbox
+        leaf.coord_lo_enc.clear();
+        leaf.coord_hi_enc.clear();
+        leaf.coord_lo_enc.reserve(static_cast<size_t>(cfg.dim_count));
+        leaf.coord_hi_enc.reserve(static_cast<size_t>(cfg.dim_count));
+        for (int32_t d = 0; d < cfg.dim_count; ++d)
+            leaf.coord_lo_enc.push_back(read_ct(is, n2_shared, fast_mod));
+        for (int32_t d = 0; d < cfg.dim_count; ++d)
+            leaf.coord_hi_enc.push_back(read_ct(is, n2_shared, fast_mod));
         const auto& pl_leaf = idx.plain_.leaf_nodes()[i];
         leaf.slot_count   = pl_leaf.slot_count;
         leaf.filled_count = pl_leaf.filled_count;
@@ -600,7 +642,7 @@ SULCipherIndex::load_from_file(const std::string& path) {
         auto tree = std::make_unique<EncARTTree>(kl, crypto);
         uint8_t has = read_pod<uint8_t>(is);
         if (has) {
-            ArtLoadContext ctx{pool, enc_zero_const, n2_shared, fast_mod, 0, 0};
+            ArtLoadContext ctx{pool, enc_zero_const, n2_shared, fast_mod, version, 0, 0};
             void* root = load_art_subtree(is, ctx);
             tree->set_root(root, ctx.inner_count, ctx.leaf_count);
         }

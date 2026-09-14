@@ -80,7 +80,7 @@ int main(int argc, char** argv) {
     std::cout << "  dataset = " << dataset_path << "\n";
     std::cout << "  query   = " << query_path << "\n";
     std::cout << "  paillier_key = " << KSZ
-              << "  err(cli) = " << err_cli << " (<=0 → auto N/1000)\n";
+              << "  err(cli) = " << err_cli << " (<=0 → auto 4)\n";
 
     util::CsvLoadResult ds;
     util::QueryFile     qf;
@@ -105,7 +105,7 @@ int main(int argc, char** argv) {
     auto data_cipher = ds.data;
     IndexConfig cfg;
     cfg.dim_count   = DIM;
-    cfg.error_bound = (err_cli > 0) ? err_cli : std::max<int32_t>(8, N / 1000);
+    cfg.error_bound = (err_cli > 0) ? err_cli : 4;
 
     // ------ Phase 1: 构建 ------
     print_header("Phase 1: 构建索引");
@@ -135,6 +135,11 @@ int main(int argc, char** argv) {
     double cipher_build_ms = 0.0;
     double save_ms        = 0.0;
     double load_ms        = 0.0;
+    // 结构指标（仅 build 路径采集；load 路径不重建，跳过）
+    size_t learn_node_count = 0, learn_leaf_count = 0;
+    size_t art_node_count   = 0, art_leaf_count   = 0;
+    int    learn_height = 0;
+    int    art_height   = 0;
 
     if (fs::exists(scidx_path)) {
         // 路径 A：直接反序列化已有索引
@@ -164,6 +169,25 @@ int main(int argc, char** argv) {
         t1 = std::chrono::steady_clock::now();
         cipher_build_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
         std::cout << "  cipher bulk_load: " << cipher_build_ms << " ms\n";
+
+        // 结构指标采集（必须在 reset 前；loaded 实例不保留 ART 叶子，无法事后统计）
+        {
+            size_t learn_inner_total = 0;
+            for (const auto& layer : cipher_tmp->plain().inner_layers())
+                learn_inner_total += layer.size();
+            learn_leaf_count = cipher_tmp->leaf_count();
+            learn_node_count = learn_inner_total + learn_leaf_count;
+            learn_height     = static_cast<int>(cipher_tmp->inner_layer_count()) + 1;
+            size_t art_inner_total = 0;
+            for (const auto& tr : cipher_tmp->plain().art_trees())
+                if (tr) { art_inner_total += tr->node_count(); art_leaf_count += tr->leaf_count(); }
+            art_node_count = art_inner_total + art_leaf_count;
+            art_height     = cfg.key_len();
+            std::cout << "  learn nodes=" << learn_node_count
+                      << " (leaf=" << learn_leaf_count << ") height=" << learn_height
+                      << "  art nodes=" << art_node_count
+                      << " (leaf=" << art_leaf_count << ") height=" << art_height << "\n";
+        }
 
         t0 = std::chrono::steady_clock::now();
         cipher_tmp->save_to_file(scidx_path);
@@ -231,7 +255,9 @@ int main(int argc, char** argv) {
         ExperimentRecorder::append_row(build_csv,
             {"timestamp","K","err","dim","N",
              "build_ms","keygen_ms","save_ms","load_ms",
-             "file_bytes","file_bytes_kl1"},
+             "file_bytes","file_bytes_kl1",
+             "learn_node_count","learn_leaf_count","learn_height",
+             "art_node_count","art_leaf_count","art_height"},
             {ExperimentRecorder::now_iso(),
              std::to_string(KSZ),
              std::to_string(cfg.error_bound),
@@ -242,7 +268,13 @@ int main(int argc, char** argv) {
              ExperimentRecorder::ftoa(save_ms),
              ExperimentRecorder::ftoa(load_ms),
              std::to_string(file_bytes),
-             std::to_string(file_bytes_kl1)});
+             std::to_string(file_bytes_kl1),
+             std::to_string(learn_node_count),
+             std::to_string(learn_leaf_count),
+             std::to_string(learn_height),
+             std::to_string(art_node_count),
+             std::to_string(art_leaf_count),
+             std::to_string(art_height)});
         std::cout << "  → record: " << build_csv << "\n";
         std::cout << "  file_bytes      = " << file_bytes      << " B"
                   << "  (" << (file_bytes      / 1024.0 / 1024.0) << " MiB, 实际盘上)\n";
@@ -261,6 +293,13 @@ int main(int argc, char** argv) {
     double cipher_ms_total       = 0.0;
     double cipher_learn_us_sum   = 0.0;
     double cipher_art_us_sum     = 0.0;
+    double cipher_collect_us_sum    = 0.0;
+    double cipher_spi_setup_us_sum  = 0.0;
+    double cipher_spi_filter_us_sum = 0.0;
+    size_t cipher_cand_total        = 0;
+    size_t cipher_cand_kept         = 0;
+    size_t cipher_mid_total_sum     = 0;
+    size_t cipher_mid_pruned_sum    = 0;
     std::vector<size_t> plain_hits_per_query;
     plain_hits_per_query.reserve(qf.queries.size());
 
@@ -276,9 +315,16 @@ int main(int argc, char** argv) {
         auto ct0 = std::chrono::steady_clock::now();
         auto c_res = cipher.range_query_with_stats(q.lo.data(), q.hi.data(), &cst);
         auto ct1 = std::chrono::steady_clock::now();
-        cipher_ms_total     += std::chrono::duration<double, std::milli>(ct1 - ct0).count();
-        cipher_learn_us_sum += cst.learning_us;
-        cipher_art_us_sum   += cst.art_us;
+        cipher_ms_total          += std::chrono::duration<double, std::milli>(ct1 - ct0).count();
+        cipher_learn_us_sum      += cst.learning_us;
+        cipher_art_us_sum        += cst.art_us;
+        cipher_collect_us_sum    += cst.collect_us;
+        cipher_spi_setup_us_sum  += cst.spi_setup_us;
+        cipher_spi_filter_us_sum += cst.spi_filter_us;
+        cipher_cand_total        += cst.candidates_total;
+        cipher_cand_kept         += cst.candidates_kept;
+        cipher_mid_total_sum     += cst.middle_leaves_total;
+        cipher_mid_pruned_sum    += cst.middle_leaves_pruned;
 
         plain_total_returned  += p_res.size();
         cipher_total_returned += c_res.size();
@@ -313,10 +359,39 @@ int main(int argc, char** argv) {
         NQ ? (cipher_learn_us_sum / 1000.0) / static_cast<double>(NQ) : 0.0;
     const double cipher_art_ms_avg   =
         NQ ? (cipher_art_us_sum   / 1000.0) / static_cast<double>(NQ) : 0.0;
+    const double cipher_collect_ms_avg =
+        NQ ? (cipher_collect_us_sum / 1000.0) / static_cast<double>(NQ) : 0.0;
+    const double cipher_spi_setup_ms_avg =
+        NQ ? (cipher_spi_setup_us_sum / 1000.0) / static_cast<double>(NQ) : 0.0;
+    const double cipher_spi_filter_ms_avg =
+        NQ ? (cipher_spi_filter_us_sum / 1000.0) / static_cast<double>(NQ) : 0.0;
+    const double candidates_avg =
+        NQ ? static_cast<double>(cipher_cand_total) / static_cast<double>(NQ) : 0.0;
+    const double kept_avg =
+        NQ ? static_cast<double>(cipher_cand_kept)  / static_cast<double>(NQ) : 0.0;
+    const double spi_filtered_avg = candidates_avg - kept_avg;
+    const double spi_pass_rate = candidates_avg > 0
+        ? kept_avg / candidates_avg : 0.0;
+    const double middle_total_avg = NQ
+        ? static_cast<double>(cipher_mid_total_sum)  / static_cast<double>(NQ) : 0.0;
+    const double middle_pruned_avg = NQ
+        ? static_cast<double>(cipher_mid_pruned_sum) / static_cast<double>(NQ) : 0.0;
+    const double middle_prune_rate = middle_total_avg > 0
+        ? middle_pruned_avg / middle_total_avg : 0.0;
     std::cout << "  平均单查询: plain=" << plain_avg_ms << " ms/q"
               << "  cipher=" << cipher_avg_ms << " ms/q\n"
               << "  cipher 拆分: learning=" << cipher_learn_ms_avg << " ms/q"
-              << "  art=" << cipher_art_ms_avg << " ms/q\n";
+              << "  art=" << cipher_art_ms_avg << " ms/q\n"
+              << "  ART 细分: collect=" << cipher_collect_ms_avg << " ms/q"
+              << "  spi_setup=" << cipher_spi_setup_ms_avg << " ms/q"
+              << "  spi_filter=" << cipher_spi_filter_ms_avg << " ms/q\n"
+              << "  SPI 候选: total=" << candidates_avg
+              << " kept=" << kept_avg
+              << " filtered=" << spi_filtered_avg
+              << " pass_rate=" << (spi_pass_rate * 100.0) << "%\n"
+              << "  中间叶子剪枝: total=" << middle_total_avg
+              << " pruned=" << middle_pruned_avg
+              << " prune_rate=" << (middle_prune_rate * 100.0) << "%\n";
 
     const double recall    = plain_total_returned
         ? static_cast<double>(intersect_total) / static_cast<double>(plain_total_returned)
@@ -358,6 +433,9 @@ int main(int argc, char** argv) {
             {"timestamp","K","err","dim","N","sl_pct",
              "query_count","total_ms","avg_ms",
              "learning_ms_avg","art_ms_avg",
+             "collect_ms_avg","spi_setup_ms_avg","spi_filter_ms_avg",
+             "candidates_avg","kept_avg",
+             "middle_total_avg","middle_pruned_avg",
              "returned_avg","recall","precision",
              "actual_ratio_pct","returned_min","returned_p50",
              "returned_p95","returned_max"},
@@ -372,6 +450,13 @@ int main(int argc, char** argv) {
              ExperimentRecorder::ftoa(cipher_avg_ms),
              ExperimentRecorder::ftoa(cipher_learn_ms_avg),
              ExperimentRecorder::ftoa(cipher_art_ms_avg),
+             ExperimentRecorder::ftoa(cipher_collect_ms_avg),
+             ExperimentRecorder::ftoa(cipher_spi_setup_ms_avg),
+             ExperimentRecorder::ftoa(cipher_spi_filter_ms_avg),
+             ExperimentRecorder::ftoa(candidates_avg),
+             ExperimentRecorder::ftoa(kept_avg),
+             ExperimentRecorder::ftoa(middle_total_avg),
+             ExperimentRecorder::ftoa(middle_pruned_avg),
              ExperimentRecorder::ftoa(returned_avg),
              ExperimentRecorder::ftoa(recall),
              ExperimentRecorder::ftoa(precision),

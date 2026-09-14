@@ -5,7 +5,7 @@
 //
 // 参数说明:
 //   K          : Paillier 密钥位数。候选 1024 / 2048 / 3072 / 4096
-//   err        : 学习层误差界 ε。≤0 时自动取 max(8, N/1000)
+//   err        : 学习层误差界 ε。≤0 时默认 4
 //   insert_csv : 可选；同 dataset 格式（首行 dim_count，其后每行 dim 个整数）
 //                提供时把 random insert 替换为读取该文件全量插入
 //   npq        : 批量点查询的样本数。默认 20，从 dataset 抽样
@@ -125,7 +125,7 @@ int main(int argc, char** argv) {
               << "  dataset = " << dataset_path << "\n"
               << "  query   = " << query_path   << "\n"
               << "  K       = " << K << "\n"
-              << "  err(cli)= " << err_cli << " (<=0 → auto N/1000)\n"
+              << "  err(cli)= " << err_cli << " (<=0 → 4)\n"
               << "  insert  = " << (insert_path.empty() ? "<none>" : insert_path) << "\n"
               << "  npq     = " << NPQ << "\n";
 
@@ -157,7 +157,7 @@ int main(int argc, char** argv) {
                   << " 与 dataset dim=" << DIM << " 不一致\n";
         return 3;
     }
-    const int32_t err = (err_cli > 0) ? err_cli : std::max(8, N / 1000);
+    const int32_t err = (err_cli > 0) ? err_cli : 4;
     const double sl_pct = parse_sl_pct_from_path(query_path);
 
     std::cout << "  dataset: N=" << N << " dim=" << DIM

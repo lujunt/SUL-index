@@ -118,7 +118,7 @@ void* EncARTTree::insert_inner(void* node, EncDataPoint* edp,
     auto attach_or_recurse = [&](void*& child_slot) {
         if (depth == key_len_ - 1) {
             if (child_slot && type_of(child_slot) == AT_LEAF) {
-                reinterpret_cast<EncARTLeaf*>(child_slot)->data_point = edp;
+                reinterpret_cast<EncARTLeaf*>(child_slot)->duplicates.push_back(edp);
             } else {
                 if (child_slot) destroy(child_slot, depth + 1);
                 child_slot = new_enc_leaf(edp);
@@ -342,7 +342,12 @@ void EncARTTree::collect_subtree(void* node, int32_t depth,
                                   std::vector<EncDataPoint*>& out) const {
     if (!node) return;
     ARTNodeType t = type_of(node);
-    if (t == AT_LEAF) { out.push_back(reinterpret_cast<EncARTLeaf*>(node)->data_point); return; }
+    if (t == AT_LEAF) {
+        auto* leaf = reinterpret_cast<EncARTLeaf*>(node);
+        out.push_back(leaf->data_point);
+        out.insert(out.end(), leaf->duplicates.begin(), leaf->duplicates.end());
+        return;
+    }
     if (t == AT_NODE4) {
         auto* n = reinterpret_cast<const EncARTNode4*>(node);
         for (int32_t i = 0; i < 4; ++i)   if (n->bitmap & (1u<<i)) collect_subtree(n->children[i], depth+1, out);
@@ -371,7 +376,12 @@ void EncARTTree::range_collect(void* node, int32_t depth,
                                 std::vector<EncDataPoint*>& out) const {
     if (!node) return;
     ARTNodeType t = type_of(node);
-    if (t == AT_LEAF) { out.push_back(reinterpret_cast<EncARTLeaf*>(node)->data_point); return; }
+    if (t == AT_LEAF) {
+        auto* leaf = reinterpret_cast<EncARTLeaf*>(node);
+        out.push_back(leaf->data_point);
+        out.insert(out.end(), leaf->duplicates.begin(), leaf->duplicates.end());
+        return;
+    }
 
     uint8_t lb = tight_low  ? low[depth]  : 0x00;
     uint8_t hb = tight_high ? high[depth] : 0xFF;

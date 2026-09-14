@@ -6,10 +6,12 @@
 //
 // 行为:
 //   1) train_csv → cipher 索引 bulk_load（建议 90% 训练集，可用 sul_split 划分）
-//   2) 读操作 = 点查询，坐标从 train 数据集随机抽样（同分布、保证可命中）
-//   3) 写操作 = insert_csv 按行顺序循环取用
-//   4) 按 read_pct/100 的比例交叉执行 ops 次操作
-//   5) 写 record/workload_<stem>_K..._err..._dim..._R{r}W{w}.csv
+//   2) 构建后 save_to_file → indexes/workload_<stem>_N<N>_K..._err..._dim....scidx
+//      并写 record/build_<stem>_N<N>_K..._err..._dim....csv（与 compare 同字段）
+//   3) 读操作 = 点查询，坐标从 train 数据集随机抽样（同分布、保证可命中）
+//   4) 写操作 = insert_csv 按行顺序循环取用
+//   5) 按 read_pct/100 的比例交叉执行 ops 次操作
+//   6) 写 record/workload_<stem>_K..._err..._dim..._R{r}W{w}.csv
 
 #include "sul/cipher/sul_cipher_index.h"
 #include "sul/util/csv_loader.h"
@@ -21,10 +23,13 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <iostream>
 #include <random>
 #include <string>
 #include <vector>
+
+namespace fs = std::filesystem;
 
 using namespace sul;
 using namespace sul::cipher;
@@ -66,7 +71,7 @@ int main(int argc, char** argv) {
                   << " insert=" << ins.dim_count << ")\n";
         return 4;
     }
-    const int32_t err = (err_cli > 0) ? err_cli : std::max(8, N / 1000);
+    const int32_t err = (err_cli > 0) ? err_cli : 4;
 
     std::cout << "=== sul_workload ===\n"
               << "  train : " << train_path  << " (N=" << N << ", dim=" << DIM << ")\n"
@@ -88,13 +93,104 @@ int main(int argc, char** argv) {
         }
     }
 
-    CryptoContext crypto(K);
     IndexConfig cfg;
     cfg.dim_count   = DIM;
     cfg.error_bound = err;
 
+    auto kb_t0 = std::chrono::steady_clock::now();
+    CryptoContext crypto(K);
+    auto kb_t1 = std::chrono::steady_clock::now();
+    double keygen_ms = std::chrono::duration<double, std::milli>(kb_t1 - kb_t0).count();
+    std::cout << "  Paillier keygen: " << keygen_ms << " ms\n";
+
     SULCipherIndex idx(cfg, crypto);
+    auto build_t0 = std::chrono::steady_clock::now();
     idx.bulk_load(std::move(train.data));
+    auto build_t1 = std::chrono::steady_clock::now();
+    double cipher_build_ms = std::chrono::duration<double, std::milli>(build_t1 - build_t0).count();
+    std::cout << "  cipher bulk_load: " << cipher_build_ms << " ms\n";
+
+    // 结构指标（学习层 / ART 层 节点数、叶子数、高度）
+    size_t learn_inner_total = 0;
+    for (const auto& layer : idx.plain().inner_layers()) learn_inner_total += layer.size();
+    const size_t learn_leaf_count = idx.leaf_count();
+    const size_t learn_node_count = learn_inner_total + learn_leaf_count;
+    const int    learn_height     = static_cast<int>(idx.inner_layer_count()) + 1;
+    size_t art_inner_total = 0, art_leaf_count = 0;
+    for (const auto& t : idx.plain().art_trees())
+        if (t) { art_inner_total += t->node_count(); art_leaf_count += t->leaf_count(); }
+    const size_t art_node_count = art_inner_total + art_leaf_count;
+    const int    art_height     = cfg.key_len();
+    std::cout << "  learn nodes=" << learn_node_count
+              << " (leaf=" << learn_leaf_count << ") height=" << learn_height
+              << "  art nodes=" << art_node_count
+              << " (leaf=" << art_leaf_count << ") height=" << art_height << "\n";
+
+    // 序列化 + record/build CSV（与 main_compare 字段对齐；stem 加 _N{N} 避免与 compare 同名）
+    const std::string stem_train  = util::dataset_stem(train_path);
+    const std::string stem_with_N = stem_train + "_N" + std::to_string(N);
+    fs::create_directories("indexes");
+    const std::string scidx_path = "indexes/workload_" + stem_train
+                                 + "_N"   + std::to_string(N)
+                                 + "_K"   + std::to_string(K)
+                                 + "_err" + std::to_string(err)
+                                 + "_dim" + std::to_string(DIM)
+                                 + ".scidx";
+
+    auto save_t0 = std::chrono::steady_clock::now();
+    idx.save_to_file(scidx_path);
+    auto save_t1 = std::chrono::steady_clock::now();
+    double save_ms = std::chrono::duration<double, std::milli>(save_t1 - save_t0).count();
+    std::cout << "  save_to_file: " << scidx_path << " (" << save_ms << " ms)\n";
+
+    size_t file_bytes = 0;
+    {
+        std::error_code ec;
+        auto sz = fs::file_size(scidx_path, ec);
+        if (!ec) file_bytes = sz;
+    }
+    // 等效存储 file_bytes_kl1：复用 main_compare 同口径（ART-key 只压成 1 个密文）
+    const int64_t key_len_actual    = cfg.key_len();
+    const int64_t cipher_disk_bytes = 4 + ((2LL * K + 7) / 8);
+    const int64_t kl1_saved =
+        (key_len_actual - 1) * static_cast<int64_t>(N) * cipher_disk_bytes;
+    const size_t  file_bytes_kl1 =
+        (static_cast<int64_t>(file_bytes) > kl1_saved)
+        ? file_bytes - static_cast<size_t>(kl1_saved) : 0;
+
+    fs::create_directories("record");
+    {
+        ExpParams bp{ K, err, DIM, stem_with_N, "" };
+        std::string build_csv = ExperimentRecorder::build_path("build", bp);
+        ExperimentRecorder::append_row(build_csv,
+            {"timestamp","K","err","dim","N",
+             "build_ms","keygen_ms","save_ms","load_ms",
+             "file_bytes","file_bytes_kl1",
+             "learn_node_count","learn_leaf_count","learn_height",
+             "art_node_count","art_leaf_count","art_height"},
+            {ExperimentRecorder::now_iso(),
+             std::to_string(K),
+             std::to_string(err),
+             std::to_string(DIM),
+             std::to_string(N),
+             ExperimentRecorder::ftoa(cipher_build_ms),
+             ExperimentRecorder::ftoa(keygen_ms),
+             ExperimentRecorder::ftoa(save_ms),
+             ExperimentRecorder::ftoa(0.0),   // workload 不 reload；保留字段以对齐 compare
+             std::to_string(file_bytes),
+             std::to_string(file_bytes_kl1),
+             std::to_string(learn_node_count),
+             std::to_string(learn_leaf_count),
+             std::to_string(learn_height),
+             std::to_string(art_node_count),
+             std::to_string(art_leaf_count),
+             std::to_string(art_height)});
+        std::cout << "  → record: " << build_csv << "\n";
+        std::cout << "  file_bytes     = " << file_bytes
+                  << " B (" << (file_bytes/1024.0/1024.0) << " MiB)\n"
+                  << "  file_bytes_kl1 = " << file_bytes_kl1
+                  << " B (" << (file_bytes_kl1/1024.0/1024.0) << " MiB)\n";
+    }
 
     std::vector<char> ops_seq(static_cast<size_t>(OPS));
     {

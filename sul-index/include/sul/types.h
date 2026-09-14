@@ -20,7 +20,7 @@ struct DataPoint {
     int32_t dimensions[MAX_DIMS]; // 各维度整数坐标（由[0,1)浮点缩放而来）
     int32_t dim_count;
     int32_t orig_id;
-    uint64_t z_value;             // z曲线值（uint64适用≤4维；6维高位会截断，仅用于排序近似）
+    __uint128_t z_value;          // z曲线值（128位；BITS_PER_DIM=16 时 6 维=96 位完全保留）
     uint8_t key_bytes[MAX_KEY_BYTES]; // ART key大端序字节表示，实际有效长度=2×dim_count
 };
 
@@ -39,6 +39,7 @@ struct ARTNodeHeader {
 struct ARTLeafNode {
     ARTNodeHeader header;
     DataPoint* data_point;
+    std::vector<DataPoint*> duplicates; // 同坐标的不同记录，范围查询全部返回
 };
 
 // 容量4，bitmap用uint8记录哪些槽位有效
@@ -74,7 +75,7 @@ struct ARTNode256 {
 };
 
 struct GPLInnerNode {
-    uint64_t key;
+    __uint128_t key;          // 段首 z 值（与 DataPoint::z_value 同类型）
     double slope;
     double intercept;
     int32_t child_start;
@@ -82,7 +83,7 @@ struct GPLInnerNode {
 };
 
 struct GPLLeafNode {
-    uint64_t key;
+    __uint128_t key;          // 段首 z 值
     double slope;
     double intercept;
     std::vector<DataPoint*> data_slots; // 学习层槽位，动态大小 max(2×seg_len+2×ε, 8)

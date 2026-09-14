@@ -165,7 +165,7 @@ void* ARTTree::insert_inner(void* node, const uint8_t* key_bytes,
     auto attach_or_recurse = [&](void*& child_slot) {
         if (depth == key_len_ - 1) {
             if (child_slot && type_of(child_slot) == AT_LEAF) {
-                reinterpret_cast<ARTLeafNode*>(child_slot)->data_point = dp;
+                reinterpret_cast<ARTLeafNode*>(child_slot)->duplicates.push_back(dp);
             } else {
                 if (child_slot) destroy(child_slot, depth + 1);
                 child_slot = new_leaf(dp);
@@ -336,7 +336,12 @@ void ARTTree::collect_subtree(void* node, int32_t depth,
                                std::vector<DataPoint*>& out) const {
     if (!node) return;
     ARTNodeType t = type_of(node);
-    if (t == AT_LEAF) { out.push_back(reinterpret_cast<ARTLeafNode*>(node)->data_point); return; }
+    if (t == AT_LEAF) {
+        auto* leaf = reinterpret_cast<ARTLeafNode*>(node);
+        out.push_back(leaf->data_point);
+        out.insert(out.end(), leaf->duplicates.begin(), leaf->duplicates.end());
+        return;
+    }
     if (t == AT_NODE4) {
         auto* n = reinterpret_cast<const ARTNode4*>(node);
         for (int32_t i = 0; i < 4; ++i)
@@ -369,7 +374,12 @@ void ARTTree::range_collect(void* node, int32_t depth,
                              std::vector<DataPoint*>& out) const {
     if (!node) return;
     ARTNodeType t = type_of(node);
-    if (t == AT_LEAF) { out.push_back(reinterpret_cast<ARTLeafNode*>(node)->data_point); return; }
+    if (t == AT_LEAF) {
+        auto* leaf = reinterpret_cast<ARTLeafNode*>(node);
+        out.push_back(leaf->data_point);
+        out.insert(out.end(), leaf->duplicates.begin(), leaf->duplicates.end());
+        return;
+    }
 
     // 当前层的字节范围：若已不在边界约束内则全范围[0x00, 0xFF]
     uint8_t lb = tight_low  ? low[depth]  : 0x00;

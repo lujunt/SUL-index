@@ -72,7 +72,7 @@ public:
     const std::vector<std::unique_ptr<ARTTree>>& art_trees() const { return art_trees_; }
 
     // 加密版查询时需要使用 locate_leaf 与槽位预测（同源逻辑，避免重复实现）
-    int32_t locate_leaf_for_cipher(uint64_t z_value) const { return locate_leaf(z_value); }
+    int32_t locate_leaf_for_cipher(__uint128_t z_value) const { return locate_leaf(z_value); }
 
     // 序列化用：注入骨架（结构 + 线性模型字段），不重建 DataPoint/ART 数据
     //   - inner_in: 每层 inner 节点
@@ -94,8 +94,8 @@ private:
     std::vector<GPLLeafNode> leaf_nodes_;
     std::vector<std::unique_ptr<ARTTree>> art_trees_;
 
-    int32_t locate_leaf(uint64_t z_value) const;
-    DataPoint* search_leaf_for_zvalue(int32_t leaf_idx, uint64_t z_value) const;
+    int32_t locate_leaf(__uint128_t z_value) const;
+    DataPoint* search_leaf_for_zvalue(int32_t leaf_idx, __uint128_t z_value) const;
 };
 
 }

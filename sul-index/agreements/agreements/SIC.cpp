@@ -65,33 +65,22 @@ void SICDSPFunction(Ciphertext X, Ciphertext Y, Ciphertext& final_result, Pailli
     {
         Z = Y - X;
     }
-    std::thread t2([&R, Z, f, &final_result, &paillier]() {
-        Ciphertext local_R, local_Z;
-        SICDAPFunction(R, Z, paillier);
-        if(f == 1)  final_result = R;
-        else 
-        {
-            Integer a(1);
-            Ciphertext b;
-            b = global_enc_one;  
-            final_result = b - R;
-        }
-    });
-    t2.join();
+    // 去线程版：原 lambda + t2 spawn 立即 join，等价于同步调用 SICDAPFunction
+    SICDAPFunction(R, Z, paillier);
+    if (f == 1) {
+        final_result = R;
+    } else {
+        final_result = global_enc_one - R;
+    }
 }
 
 
 Integer SICrun(Ciphertext X, Ciphertext Y, PaillierFast& paillier) {
-    //此处记录开销
-    
-    Ciphertext final_result, local_X, local_Y;
-    local_X = X;
-    local_Y = Y;
-    std::thread t1(SICDSPFunction, local_X, local_Y, std::ref(final_result), std::ref(paillier));
-    t1.join();
-    Integer res;
-    res = paillier.decrypt(final_result);
-    return res;
+    // 去线程版：原实现 spawn t1 后立即 join，等价于同步调用 SICDSPFunction
+    // thread spawn/join 在百微秒级 SIC 中占可观比例
+    Ciphertext final_result;
+    SICDSPFunction(X, Y, final_result, paillier);
+    return paillier.decrypt(final_result);
 }
 
 Integer SICrun_1(Ciphertext X, Ciphertext Y, PaillierFast& paillier)

@@ -168,6 +168,8 @@ QueryFile load_query_file(const std::string& path, int32_t scale) {
             for (int32_t d = 0; d < dim; ++d) {
                 double lo = std::stod(fields[d]);
                 double hi = std::stod(fields[dim + d]);
+                if (!std::isfinite(lo) || !std::isfinite(hi) || lo < 0 || lo > 1 || hi < 0 || hi > 1)
+                    throw std::runtime_error("query coordinates must be finite and in [0,1]");
                 int32_t ilo = static_cast<int32_t>(std::floor(lo * scale_d));
                 int32_t ihi = static_cast<int32_t>(std::floor(hi * scale_d));
                 if (ilo < 0)         ilo = 0;
@@ -233,7 +235,10 @@ size_t generate_query_files(const std::string& dataset_path,
         if (!out_path.empty() && out_path.back() != '/' && out_path.back() != '\\') {
             out_path.push_back('/');
         }
-        out_path += stem + "_" + format_ratio_pct(pct) + ".csv";
+        // 命名：<stem>_dim{D}_<ratio>.csv
+        // 维度放中间——下游 parse_sl_pct_from_path 取最后 "_" 后内容，仍能正确解析 ratio
+        out_path += stem + "_dim" + std::to_string(DIM)
+                  + "_" + format_ratio_pct(pct) + ".csv";
 
         // 先把所有窗口算好（target_hits 模式下要先跑完二分才能写完整 header）
         std::vector<std::vector<double>> all_lo, all_hi;
@@ -244,8 +249,18 @@ size_t generate_query_files(const std::string& dataset_path,
         int32_t hits_min = std::numeric_limits<int32_t>::max();
         int32_t hits_max = 0;
         int32_t converged_cnt = 0;
+        int32_t skipped_cnt   = 0;
 
-        for (int32_t q = 0; q < n_queries; ++q) {
+        // target_hits 模式：未收敛窗口 skip 重试，直到收齐 n_queries 或达到 attempts 上限
+        // uniform_volume 模式：每次循环必收（无验证），等同于原 for-loop
+        const int32_t MAX_ATTEMPTS = target_hits_mode
+            ? n_queries * 30   // 30:1 重试预算
+            : n_queries;
+        int32_t attempts = 0;
+
+        while (static_cast<int32_t>(all_lo.size()) < n_queries
+               && attempts < MAX_ATTEMPTS) {
+            ++attempts;
             const auto& center = ds.data[pick(rng)];
 
             double edge_used  = edge_uniform;
@@ -253,9 +268,13 @@ size_t generate_query_files(const std::string& dataset_path,
             if (target_hits_mode) {
                 auto br = bisect_edge_for_target(ds.data, center, DIM, scale_d,
                                                   target, TOL, edge_uniform);
+                if (!br.converged) {
+                    ++skipped_cnt;
+                    continue;  // ← 实测命中数偏离容差，丢弃该窗口
+                }
                 edge_used = br.edge;
                 hits_used = br.hits;
-                if (br.converged) ++converged_cnt;
+                ++converged_cnt;
             }
 
             std::vector<double> lv, hv;
@@ -270,6 +289,16 @@ size_t generate_query_files(const std::string& dataset_path,
             all_hi.push_back(std::move(hv));
         }
 
+        if (target_hits_mode
+            && static_cast<int32_t>(all_lo.size()) < n_queries) {
+            std::cerr << "[error] " << out_path << ": 尝试 " << attempts
+                      << " 次仅收齐 " << all_lo.size() << "/" << n_queries
+                      << " 个合规窗口（skipped=" << skipped_cnt
+                      << "）。建议放宽 tol 或换数据集。\n";
+        }
+
+        if (static_cast<int32_t>(all_lo.size()) != n_queries)
+            throw std::runtime_error("generate_query_files: insufficient valid queries");
         std::ofstream ofs(out_path);
         if (!ofs) throw std::runtime_error("generate_query_files: cannot write " + out_path);
 
@@ -279,6 +308,7 @@ size_t generate_query_files(const std::string& dataset_path,
             << " dim=" << DIM
             << " ratio_pct=" << pct
             << " mode=" << (target_hits_mode ? "target_hits" : "uniform_volume")
+            << " seed=" << seed
             << " n_queries=" << n_queries;
         if (target_hits_mode) {
             const double hit_mean =
@@ -288,13 +318,9 @@ size_t generate_query_files(const std::string& dataset_path,
                 << " hit_min=" << hits_min
                 << " hit_mean=" << hit_mean
                 << " hit_max=" << hits_max
-                << " converged=" << converged_cnt << "/" << n_queries;
-            if (converged_cnt < n_queries) {
-                std::cerr << "[warn] " << out_path << ": "
-                          << (n_queries - converged_cnt) << "/" << n_queries
-                          << " queries 未收敛到 ±" << (TOL * 100)
-                          << "% 容差（best-effort 保留最接近 edge）\n";
-            }
+                << " converged=" << converged_cnt << "/" << n_queries
+                << " skipped=" << skipped_cnt
+                << " attempts=" << attempts;
         } else {
             ofs << " edge=" << edge_uniform;
         }

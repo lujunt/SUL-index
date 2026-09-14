@@ -1,0 +1,144 @@
+#!/usr/bin/env bash
+# 参数实验批量执行脚本
+#
+# 用法（从 sul-index/ 目录执行；脚本会自动切换到 sul-index 根）:
+#   bash scripts/run_param_experiments.sh                    # 全部 6 数据集 × 5 sweep
+#   bash scripts/run_param_experiments.sh "UNI MBF"          # 仅 UNI 与 MBF 全部 sweep
+#   bash scripts/run_param_experiments.sh UNI sl             # UNI 仅 sl sweep
+#   bash scripts/run_param_experiments.sh "UNI MBF" "sl d"   # 自定义子集
+#   bash scripts/run_param_experiments.sh SKE                # 仅 SKE 全部 sweep
+#
+# 参数矩阵（与 SUL-indx 实验设置.md 一致）:
+#   默认: N=20000, d=2, K=1024, err=4, sl=0.25%
+#   sl  : 0.25 / 0.5 / 1 / 2 / 4
+#   N   : 20000 / 40000 / 60000 / 80000 / 100000
+#   d   : 2 / 3 / 4 / 5 / 6
+#   err : 1 / 2 / 4 / 8 / 16
+#   K   : 1024 / 2048 / 3072 / 4096
+#
+# 产出:
+#   record/build_<stem>_K{K}_err{err}_dim{d}.csv
+#   record/rangequery_<stem>_K{K}_err{err}_dim{d}_sl{tag}.csv
+#   logs/run_<STEM>_<SWEEP>.log    每个 sweep 一份完整 stdout/stderr
+#
+# 前置：
+#   1. cmake --build build 已构建 sul_compare_demo
+#   2. datasets/<STEM>_<N>_<suffix>_<d>.csv 齐备
+#   3. query/<STEM>_<N>_dim<d>_<sl>.csv 齐备
+#      (suffix: UNI=1, ABUS/MBF/PLUT/USAC=0, SKE=4)
+
+set -uo pipefail
+cd "$(dirname "$0")/.." || { echo "[error] cannot cd to sul-index root"; exit 1; }
+
+EXE=./build/sul_compare_demo
+if [ ! -x "$EXE" ]; then
+    echo "[error] $EXE 不存在或不可执行；请先 cmake --build build"; exit 1
+fi
+
+DATASETS="${1:-UNI ABUS MBF PLUT USAC SKE}"
+SWEEPS="${2:-sl N d err K}"
+
+DEFAULT_N=20000
+DEFAULT_D=2
+DEFAULT_K=1024
+DEFAULT_ERR=4
+DEFAULT_SL=0.25
+
+SL_VALUES="0.25 0.5 1 2 4"
+N_VALUES="20000 40000 60000 80000 100000"
+D_VALUES="2 3 4 5 6"
+ERR_VALUES="1 2 4 8 16"
+K_VALUES="1024 2048 3072 4096"
+
+mkdir -p logs record
+
+suffix_for() {
+    case "$1" in
+        UNI) echo 1 ;;
+        ABUS|MBF|PLUT|USAC) echo 0 ;;
+        SKE) echo 4 ;;
+        *) echo "[error] unknown stem: $1" >&2; exit 2 ;;
+    esac
+}
+
+# 单次 sul_compare_demo 调用：失败也不中断 sweep，仅记录 [warn]
+run_compare() {
+    local label=$1 ds=$2 q=$3 k=$4 err=$5 log=$6
+    if [ ! -f "$ds" ]; then echo "[warn] 缺数据集 $ds (跳过 $label)" | tee -a "$log"; return; fi
+    if [ ! -f "$q"  ]; then echo "[warn] 缺查询文件 $q (跳过 $label)" | tee -a "$log"; return; fi
+    echo "===== [$(date +%T)] $label =====" >>"$log"
+    "$EXE" "$ds" "$q" "$k" "$err" >>"$log" 2>&1
+    local rc=$?
+    echo "===== [$(date +%T)] $label DONE rc=$rc =====" >>"$log"
+}
+
+run_sweep() {
+    local stem=$1 sweep=$2 log=$3
+    local sfx; sfx=$(suffix_for "$stem")
+
+    case "$sweep" in
+      sl)
+        for sl in $SL_VALUES; do
+            run_compare "${stem} sl=${sl}%" \
+                "datasets/${stem}_${DEFAULT_N}_${sfx}_${DEFAULT_D}.csv" \
+                "query/${stem}_${DEFAULT_N}_dim${DEFAULT_D}_${sl}.csv" \
+                "$DEFAULT_K" "$DEFAULT_ERR" "$log"
+        done ;;
+      N)
+        for N in $N_VALUES; do
+            run_compare "${stem} N=${N}" \
+                "datasets/${stem}_${N}_${sfx}_${DEFAULT_D}.csv" \
+                "query/${stem}_${N}_dim${DEFAULT_D}_${DEFAULT_SL}.csv" \
+                "$DEFAULT_K" "$DEFAULT_ERR" "$log"
+        done ;;
+      d)
+        for d in $D_VALUES; do
+            run_compare "${stem} d=${d}" \
+                "datasets/${stem}_${DEFAULT_N}_${sfx}_${d}.csv" \
+                "query/${stem}_${DEFAULT_N}_dim${d}_${DEFAULT_SL}.csv" \
+                "$DEFAULT_K" "$DEFAULT_ERR" "$log"
+        done ;;
+      err)
+        for err in $ERR_VALUES; do
+            run_compare "${stem} err=${err}" \
+                "datasets/${stem}_${DEFAULT_N}_${sfx}_${DEFAULT_D}.csv" \
+                "query/${stem}_${DEFAULT_N}_dim${DEFAULT_D}_${DEFAULT_SL}.csv" \
+                "$DEFAULT_K" "$err" "$log"
+        done ;;
+      K)
+        for K in $K_VALUES; do
+            run_compare "${stem} K=${K}" \
+                "datasets/${stem}_${DEFAULT_N}_${sfx}_${DEFAULT_D}.csv" \
+                "query/${stem}_${DEFAULT_N}_dim${DEFAULT_D}_${DEFAULT_SL}.csv" \
+                "$K" "$DEFAULT_ERR" "$log"
+        done ;;
+      *)
+        echo "[error] unknown sweep '$sweep' (合法: sl N d err K)" >&2; exit 2 ;;
+    esac
+}
+
+total=$(($(echo $DATASETS | wc -w) * $(echo $SWEEPS | wc -w)))
+i=0
+ALL_START=$SECONDS
+
+printf "%-6s %-4s %-8s %-12s %-12s %s\n" "#" "STEM" "SWEEP" "elapsed" "PASS/FAIL" "log"
+echo "--------------------------------------------------------------------------"
+
+for stem in $DATASETS; do
+    for sweep in $SWEEPS; do
+        i=$((i+1))
+        log=logs/run_${stem}_${sweep}.log
+        : >"$log"
+        ts=$SECONDS
+        run_sweep "$stem" "$sweep" "$log"
+        elapsed=$((SECONDS - ts))
+        pass=$(grep -c "结论: PASS" "$log" || true)
+        fail=$(grep -c "结论: FAIL" "$log" || true)
+        printf "[%2d/%2d] %-4s %-8s %-12s P=%-3d/F=%-3d %s\n" \
+            "$i" "$total" "$stem" "$sweep" "${elapsed}s" "$pass" "$fail" "$log"
+    done
+done
+
+echo "--------------------------------------------------------------------------"
+echo "全部完成，总耗时 $((SECONDS - ALL_START))s"
+echo "record/ CSV 数量: $(ls record/*.csv 2>/dev/null | wc -l)"
