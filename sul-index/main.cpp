@@ -102,7 +102,7 @@ private:
 }
 
 int main(int argc, char** argv) {
-    std::string csv_path = "/path/to/SUL-index/uniform_20000_1_2_.csv";
+    std::string csv_path = "datasets/uniform_20000_1_2_.csv";
     if (argc > 1) csv_path = argv[1];
 
     std::cout << "===== SUL-plain-index Demo =====\n";

@@ -39,3 +39,14 @@ Thumbs.db
 # Python experiment/test caches
 __pycache__/
 *:Zone.Identifier
+
+# Local research material and generated reports
+Papers/
+sul-index/logs/
+sul-index/record.zip
+sul-index/*.xls*
+sul-index/scripts/*.png
+rebuild_theory.tex
+新重训练*.md
+重训练实验记录.csv
+sul-index/重训练数据整合.csv
