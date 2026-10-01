@@ -3,18 +3,15 @@
 gen_hot_split.py
 ================
 
-从 100K 数据集中拆出 base（前 N_base 点）+ hot_ul（N_hot 个热写点），
-并基于模板查询文件生成同 selectivity 的热查询文件。
+Split a 100K dataset into a base (first N_base points) and hot_ul (N_hot hot-write
+points), then generate hot queries with the template query's selectivity.
 
-热写定义：
-  对 base 按 z 排序后等分 n_buckets 个桶，每个桶有 z 边界 [z_lo, z_hi]
-  与 2D 包围盒 [x_lo, x_hi] × [y_lo, y_hi]。
-  hot_buckets 指定的桶视为"热区"。
-  - 热写点 = 从 pool（100K\base）中筛 z 值落入任一热区的点；不足则在 2D
-    包围盒内合成补充。
-  - 热查询 = 复用模板查询的每条矩形边长，把中心重锚到随机热桶 2D bbox 内。
+Hot writes are defined by sorting the base by Z-order and dividing it into n_buckets.
+Each hot bucket has Z-order bounds and a 2D bounding box. Pool points in those buckets
+become hot writes; missing points are synthesized inside the boxes. Hot queries reuse
+template rectangle sizes and move their centers into random hot-bucket boxes.
 
-用法:
+Usage:
   python3 scripts/gen_hot_split.py SRC OUT_BASE OUT_HOT_UL \
       [--template-query QUERY_CSV --out-hot-query OUT_HOT_QUERY] \
       [--n-base 20000] [--n-hot 10000] [--n-buckets 50] \
@@ -27,7 +24,7 @@ import sys
 
 
 def morton2d_16(x: int, y: int) -> int:
-    """16-bit per dim Morton (Z-order) 编码，对齐 C++ 端 ZOrderEncoder。"""
+    """Encode a 16-bit-per-dimension Morton value compatible with C++ ZOrderEncoder."""
     def part(v: int) -> int:
         v &= 0xFFFF
         v = (v | (v << 8)) & 0x00FF00FF
@@ -45,7 +42,7 @@ def z_of(xf: float, yf: float) -> int:
 
 
 def load_points(path):
-    """读 CSV：每行 x,y,id（float, float, int）。返回 list[(x, y, id)]."""
+    """Read x,y,id CSV rows and return a list of (x, y, id)."""
     rows = []
     with open(path, newline='') as f:
         for r in csv.reader(f):
@@ -56,7 +53,7 @@ def load_points(path):
 
 
 def build_buckets(base_sorted, n_buckets):
-    """返回 list[(z_lo, z_hi, x_lo, x_hi, y_lo, y_hi)]，每个桶含 z 区间 + 2D bbox。"""
+    """Return each bucket's Z-order interval and 2D bounding box."""
     n = len(base_sorted)
     bsize = n // n_buckets
     buckets = []
@@ -79,7 +76,7 @@ def write_csv(path, rows):
 
 
 def gen_hot_ul(pool, hot_buckets_info, n_hot, rng):
-    """从 pool 筛热区点，不足则在 hot bbox 内合成补充。"""
+    """Select hot-region points from the pool and synthesize any shortfall in hot boxes."""
     def in_hot(z):
         for b in hot_buckets_info:
             if b[0] <= z <= b[1]:
@@ -93,7 +90,7 @@ def gen_hot_ul(pool, hot_buckets_info, n_hot, rng):
         hot = rng.sample(pool_hot, n_hot)
     else:
         hot = list(pool_hot)
-        next_id = 10_000_000  # 合成点 id 段，避免与原 0..99999 冲突
+        next_id = 10_000_000  # Synthetic ID range avoids collisions with 0..99999.
         while len(hot) < n_hot:
             b = hot_buckets_info[rng.randint(0, len(hot_buckets_info) - 1)]
             x = rng.uniform(b[2], b[3])
@@ -106,7 +103,7 @@ def gen_hot_ul(pool, hot_buckets_info, n_hot, rng):
 
 
 def gen_hot_query(template_path, hot_buckets_info, rng):
-    """复用模板矩形边长，把中心重锚到随机热桶 2D bbox 内。"""
+    """Reuse template rectangle sizes and move centers into random hot-bucket boxes."""
     header_comment = None
     rects = []
     with open(template_path, newline='') as f:
@@ -134,7 +131,7 @@ def gen_hot_query(template_path, hot_buckets_info, rng):
         new_lo_y = max(0.0, cy - dy / 2)
         new_hi_x = min(1.0 - 1e-9, new_lo_x + dx)
         new_hi_y = min(1.0 - 1e-9, new_lo_y + dy)
-        # 若上界裁剪后变小，下界也要相应回退保持边长
+        # Shift the lower bound after upper-bound clipping to preserve edge length.
         if new_hi_x - new_lo_x < dx - 1e-12:
             new_lo_x = max(0.0, new_hi_x - dx)
         if new_hi_y - new_lo_y < dy - 1e-12:
@@ -147,29 +144,29 @@ def gen_hot_query(template_path, hot_buckets_info, rng):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('src', help='100K source CSV')
-    ap.add_argument('out_base', help='输出 base CSV')
-    ap.add_argument('out_hot_ul', help='输出 hot insert CSV')
+    ap.add_argument('out_base', help='output base CSV')
+    ap.add_argument('out_hot_ul', help='output hot-insertion CSV')
     ap.add_argument('--n-base', type=int, default=20000)
     ap.add_argument('--n-hot', type=int, default=10000)
     ap.add_argument('--n-buckets', type=int, default=50)
     ap.add_argument('--hot-buckets', default='24,25,26')
     ap.add_argument('--seed', type=int, default=42)
     ap.add_argument('--template-query', default=None,
-                    help='模板查询文件路径；提供时会同步生成热查询')
+                    help='template query path; also generates hot queries when provided')
     ap.add_argument('--out-hot-query', default=None,
-                    help='热查询输出路径；与 --template-query 配套')
+                    help='hot-query output path; requires --template-query')
     args = ap.parse_args()
 
     if (args.template_query is None) != (args.out_hot_query is None):
-        ap.error('--template-query 与 --out-hot-query 必须同时提供')
+        ap.error('--template-query and --out-hot-query must be provided together')
 
     rng = random.Random(args.seed)
     rows = load_points(args.src)
     print(f"[info] loaded {len(rows)} rows from {args.src}", file=sys.stderr)
     if len(rows) < args.n_base + 1:
-        ap.error(f'src 行数 {len(rows)} 小于 n_base={args.n_base}')
+        ap.error(f'source has {len(rows)} rows, fewer than n_base={args.n_base}')
 
-    # 给所有点附加 z-value，统一保留 (x, y, id, z) 元组
+    # Attach a Z-order value to every point as (x, y, id, z).
     pts = [(x, y, i, z_of(x, y)) for (x, y, i) in rows]
 
     base = pts[:args.n_base]
@@ -181,7 +178,7 @@ def main():
     hot_idx = [int(s) for s in args.hot_buckets.split(',')]
     bad = [k for k in hot_idx if not (0 <= k < args.n_buckets)]
     if bad:
-        ap.error(f'hot-buckets 越界: {bad} (n-buckets={args.n_buckets})')
+        ap.error(f'hot-buckets out of range: {bad} (n-buckets={args.n_buckets})')
     hot_info = [buckets[k] for k in hot_idx]
 
     print(f"[info] hot buckets={hot_idx}", file=sys.stderr)

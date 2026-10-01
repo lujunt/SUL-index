@@ -1,17 +1,14 @@
-// 场景实验 demo：固定 OPS=2000 操作按读/写比例交叉执行
+// Workload demo: interleave 2,000 operations at a selected read/write ratio.
 //
-// 用法:
+// Usage:
 //   ./sul_workload <train_csv> <insert_csv>
 //                  [K=1024] [err=-1] [read_pct=50] [ops=2000]
 //
-// 行为:
-//   1) train_csv → cipher 索引 bulk_load（建议 90% 训练集，可用 sul_split 划分）
-//   2) 构建后 save_to_file → indexes/workload_<stem>_N<N>_K..._err..._dim....scidx
-//      并写 record/build_<stem>_N<N>_K..._err..._dim....csv（与 compare 同字段）
-//   3) 读操作 = 点查询，坐标从 train 数据集随机抽样（同分布、保证可命中）
-//   4) 写操作 = insert_csv 按行顺序循环取用
-//   5) 按 read_pct/100 的比例交叉执行 ops 次操作
-//   6) 写 record/workload_<stem>_K..._err..._dim..._R{r}W{w}.csv
+// Behavior:
+//   1) Bulk-load train_csv into the encrypted index.
+//   2) Serialize the index and write build metrics.
+//   3) Sample point reads from training data and cycle writes through insert_csv.
+//   4) Interleave ops operations according to read_pct and write workload metrics.
 
 #include "sul/cipher/sul_cipher_index.h"
 #include "sul/util/csv_loader.h"
@@ -51,7 +48,7 @@ int main(int argc, char** argv) {
     const int32_t OPS      = (argc > 6) ? std::atoi(argv[6]) : 2000;
 
     if (read_pct < 0 || read_pct > 100) {
-        std::cerr << "[error] read_pct 必须在 [0,100] 区间\n";
+        std::cerr << "[error] read_pct must be in [0, 100]\n";
         return 2;
     }
     const int32_t write_pct = 100 - read_pct;
@@ -67,7 +64,7 @@ int main(int argc, char** argv) {
     const int32_t N   = static_cast<int32_t>(train.data.size());
     const int32_t DIM = train.dim_count;
     if (DIM != ins.dim_count) {
-        std::cerr << "[error] dim 不一致 (train=" << DIM
+        std::cerr << "[error] dimension mismatch (train=" << DIM
                   << " insert=" << ins.dim_count << ")\n";
         return 4;
     }
@@ -75,13 +72,13 @@ int main(int argc, char** argv) {
 
     std::cout << "=== sul_workload ===\n"
               << "  train : " << train_path  << " (N=" << N << ", dim=" << DIM << ")\n"
-              << "  insert: " << insert_path << " (" << ins.data.size() << " 点)\n"
+              << "  insert: " << insert_path << " (" << ins.data.size() << " points)\n"
               << "  K=" << K << "  err=" << err
               << "  R%=" << read_pct << "  W%=" << write_pct
               << "  ops=" << OPS << "\n";
 
-    // 读操作 = 点查询，坐标从 train 随机抽样（同分布、保证可命中学习层）
-    // 在 bulk_load 之前预先抽 OPS 个点坐标（实际只用前 n_read 个）
+    // Reads are point queries sampled from the training distribution. Sample OPS
+    // coordinates before bulk_load; only the first n_read are used.
     std::vector<std::vector<int32_t>> read_coords;
     {
         std::mt19937 rng(20260522);
@@ -110,7 +107,7 @@ int main(int argc, char** argv) {
     double cipher_build_ms = std::chrono::duration<double, std::milli>(build_t1 - build_t0).count();
     std::cout << "  cipher bulk_load: " << cipher_build_ms << " ms\n";
 
-    // 结构指标（学习层 / ART 层 节点数、叶子数、高度）
+    // Learning-layer and ART node, leaf, and height metrics.
     size_t learn_inner_total = 0;
     for (const auto& layer : idx.plain().inner_layers()) learn_inner_total += layer.size();
     const size_t learn_leaf_count = idx.leaf_count();
@@ -126,7 +123,7 @@ int main(int argc, char** argv) {
               << "  art nodes=" << art_node_count
               << " (leaf=" << art_leaf_count << ") height=" << art_height << "\n";
 
-    // 序列化 + record/build CSV（与 main_compare 字段对齐；stem 加 _N{N} 避免与 compare 同名）
+    // Serialize and record build fields aligned with main_compare; append _N{N} to avoid collisions.
     const std::string stem_train  = util::dataset_stem(train_path);
     const std::string stem_with_N = stem_train + "_N" + std::to_string(N);
     fs::create_directories("indexes");
@@ -149,7 +146,7 @@ int main(int argc, char** argv) {
         auto sz = fs::file_size(scidx_path, ec);
         if (!ec) file_bytes = sz;
     }
-    // 等效存储 file_bytes_kl1：复用 main_compare 同口径（ART-key 只压成 1 个密文）
+    // Equivalent file_bytes_kl1 uses the main_compare convention of one ART-key ciphertext.
     const int64_t key_len_actual    = cfg.key_len();
     const int64_t cipher_disk_bytes = 4 + ((2LL * K + 7) / 8);
     const int64_t kl1_saved =
@@ -176,7 +173,7 @@ int main(int argc, char** argv) {
              ExperimentRecorder::ftoa(cipher_build_ms),
              ExperimentRecorder::ftoa(keygen_ms),
              ExperimentRecorder::ftoa(save_ms),
-             ExperimentRecorder::ftoa(0.0),   // workload 不 reload；保留字段以对齐 compare
+             ExperimentRecorder::ftoa(0.0),   // Workloads do not reload; keep the field aligned with compare.
              std::to_string(file_bytes),
              std::to_string(file_bytes_kl1),
              std::to_string(learn_node_count),
@@ -248,7 +245,7 @@ int main(int argc, char** argv) {
     double locate_avg_ms = write_count ? (write_locate_us / 1000.0) / write_count : 0;
     double update_only_ms = upd_avg_ms - locate_avg_ms;
 
-    std::cout << "\n--- 结果 ---\n"
+    std::cout << "\n--- Results ---\n"
               << "  read=" << read_count << " write=" << write_count
               << " write_fail=" << write_fail << "\n"
               << "  total=" << total_ms << " ms"

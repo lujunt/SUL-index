@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""验证 ul 矩阵使用两条固定插入流生成两个连续检查点跑次。"""
+"""Verify that the ul matrix creates two continuous checkpoint runs from fixed insertion streams."""
 import csv
 import hashlib
 import json

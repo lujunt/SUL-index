@@ -1,11 +1,8 @@
 #!/usr/bin/env python3
-"""聚合 record/*.csv 数据，输出 SpreadsheetML 2003 XML (扩展名 .xls)。
+"""Aggregate record/*.csv into a SpreadsheetML 2003 XML workbook with an .xls extension.
 
-三张 Sheet：
-  1) 参数实验：数据规模 N / 误差 err / 密钥 K / 维度 dim / 查询窗口 sl_pct
-  2) 场景实验：workload 5 种 R/W 比
-  3) 更新实验：update 7 种 ul_pct
-末尾追加"现象总结与分析"块。
+The workbook contains parameter, workload, and update experiment sheets, each followed
+by a summary and analysis section.
 """
 from __future__ import annotations
 import csv, os, sys
@@ -14,7 +11,7 @@ from xml.sax.saxutils import escape
 
 ROOT = Path(__file__).resolve().parent.parent
 REC  = ROOT / "record"
-OUT  = ROOT / "实验数据汇总.xls"
+OUT  = ROOT / "experiment_summary.xls"
 
 DATASETS_FULL  = ["UNI", "SKE", "ABUS", "PLUT", "USAC", "MBF"]
 DATASETS_SCENE = ["UNI", "SKE", "ABUS", "USAC", "MBF"]
@@ -59,7 +56,7 @@ def load_param_n():
             if not b or not q:
                 continue
             out.append({
-                "数据集": ds, "N": N,
+                "Dataset": ds, "N": N,
                 "build_ms":        f_num(b["build_ms"], 2),
                 "file_bytes_kl1":  int(float(b["file_bytes_kl1"])),
                 "learn_node":      int(b["learn_node_count"]),
@@ -85,7 +82,7 @@ def load_param_err():
             if not b or not q:
                 continue
             out.append({
-                "数据集": ds, "err": e,
+                "Dataset": ds, "err": e,
                 "build_ms":        f_num(b["build_ms"], 2),
                 "file_bytes_kl1":  int(float(b["file_bytes_kl1"])),
                 "learn_node":      int(b["learn_node_count"]),
@@ -110,7 +107,7 @@ def load_param_k():
             if not b or not q:
                 continue
             out.append({
-                "数据集": ds, "K(bit)": k,
+                "Dataset": ds, "K(bit)": k,
                 "keygen_ms":         f_num(b["keygen_ms"], 2),
                 "build_ms":          f_num(b["build_ms"], 2),
                 "file_bytes_kl1":    int(float(b["file_bytes_kl1"])),
@@ -131,7 +128,7 @@ def load_param_dim():
             if not b or not q:
                 continue
             out.append({
-                "数据集": ds, "dim": d,
+                "Dataset": ds, "dim": d,
                 "build_ms":        f_num(b["build_ms"], 2),
                 "file_bytes_kl1":  int(float(b["file_bytes_kl1"])),
                 "learn_height":    int(b["learn_height"]),
@@ -152,7 +149,7 @@ def load_param_sl():
             if not q:
                 continue
             out.append({
-                "数据集": ds, "sl_pct(%)": SL_NUM[sl],
+                "Dataset": ds, "sl_pct(%)": SL_NUM[sl],
                 "rq_avg_ms":         f_num(q["avg_ms"], 3),
                 "learning_ms_avg":   f_num(q["learning_ms_avg"], 3),
                 "spi_filter_ms_avg": f_num(q["spi_filter_ms_avg"], 3),
@@ -173,8 +170,8 @@ def load_workload():
             if not w:
                 continue
             out.append({
-                "数据集": ds,
-                "读比例(%)": int(R), "写比例(%)": int(W),
+                "Dataset": ds,
+                "Read ratio (%)": int(R), "Write ratio (%)": int(W),
                 "ops_total":             int(w["ops_total"]),
                 "total_ms":               f_num(w["total_ms"], 2),
                 "throughput_total":       f_num(w["throughput_total"], 2),
@@ -198,7 +195,7 @@ def load_update():
             if not u:
                 continue
             out.append({
-                "数据集": ds,
+                "Dataset": ds,
                 "ul_pct(%)": UL_NUM[ul],
                 "update_count":      int(u["update_count"]),
                 "learn_cnt":         int(u["learn_cnt"]),
@@ -249,11 +246,11 @@ def sheet(name, body_rows):
 
 
 def summary_param(p_n, p_err, p_k, p_dim, p_sl):
-    L = ["【现象总结与分析】"]
+    L = ["Summary and analysis"]
     if p_n:
         by_ds = {}
         for r in p_n:
-            by_ds.setdefault(r["数据集"], []).append(r)
+            by_ds.setdefault(r["Dataset"], []).append(r)
         if by_ds:
             ds = next(iter(by_ds))
             seq = by_ds[ds]
@@ -262,77 +259,78 @@ def summary_param(p_n, p_err, p_k, p_dim, p_sl):
                 rb = tn["build_ms"] / t0["build_ms"] if t0["build_ms"] else 0
                 rq = tn["rq_avg_ms"] / t0["rq_avg_ms"] if t0["rq_avg_ms"] else 0
                 L.append(
-                    f"1) 数据规模 N：N 从 {t0['N']} → {tn['N']}（5×）时，{ds} 数据集 build_ms 放大 ~{rb:.1f}×，"
-                    f"密文文件 file_bytes_kl1 近线性增长；range_query avg_ms 仅放大 ~{rq:.1f}× — "
-                    "得益于 GPL 学习层 O(log N) 定位 + ART 桶级裁剪，查询延迟未随规模线性恶化。"
+                    f"1) Dataset size: increasing N from {t0['N']} to {tn['N']} (5x) raises {ds} "
+                    f"build_ms by about {rb:.1f}x and file_bytes_kl1 almost linearly, while "
+                    f"range-query avg_ms rises only about {rq:.1f}x because GPL lookup and ART pruning "
+                    "prevent query latency from scaling linearly."
                 )
     if p_err:
         L.append(
-            "2) 误差 err：err 从 1→16 时，学习层叶子数显著下降（更宽容的分段→更少切片），"
-            "art 节点同步收缩；但每次定位的 SIC 窗口 [pos±err] 变大，"
-            "candidates_avg 上升、rq_avg_ms 通常拐头上升。err=4 在多数数据集上呈构建/查询的良好折中。"
+            "2) Error bound: increasing err from 1 to 16 reduces learning leaves and ART nodes, "
+            "but enlarges the SIC window [pos +/- err], raising candidates_avg and usually rq_avg_ms. "
+            "err=4 is a useful build/query compromise on most datasets."
         )
     if p_k:
         L.append(
-            "3) 密钥长度 K(bit)：K 由 1024→4096 时，keygen_ms 增长一个数量级；"
-            "SPI/SIC 单次同态运算随 K 立方级别上升，rq_avg_ms 与 spi_filter_ms_avg 同步显著放大；"
-            "file_bytes_kl1 因密文长度成比例膨胀。安全性与查询延迟在 K 上权衡。"
+            "3) Key size: increasing K from 1024 to 4096 substantially raises keygen_ms, homomorphic "
+            "operation cost, rq_avg_ms, spi_filter_ms_avg, and ciphertext storage. K trades query "
+            "latency and storage for security."
         )
     if p_dim:
         L.append(
-            "4) 维度 dim：dim 由 2→6 时，ART 层高度 = key_len 同步增长，"
-            "build_ms 主要受 Z-order 重排和 ART 多层化影响；查询端 candidates_avg 在高维上扩大"
-            "（curse of dimensionality），rq_avg_ms 随维度升高显著增长；recall 仍维持 ~1.0。"
+            "4) Dimensions: from 2D to 6D, ART height follows key_len and build_ms reflects deeper "
+            "Z-order/ART processing. The curse of dimensionality expands candidates_avg and rq_avg_ms, "
+            "while recall remains near 1.0."
         )
     if p_sl:
         L.append(
-            "5) 查询窗口 sl_pct：窗口由 0.25%→4% 时，returned_avg 大致按 dim 维度幂律扩大，"
-            "rq_avg_ms 主要由 SPI filter 阶段主导，candidates_avg 随窗口增大成倍上升，"
-            "actual_ratio_pct 与 sl_pct 基本吻合；precision≈1 验证 SPI 过滤无漏报，recall≈1.0 验证召回完备。"
+            "5) Selectivity: from 0.25% to 4%, returned_avg grows approximately with dimensional "
+            "volume, candidates_avg rises, and SPI filtering dominates rq_avg_ms. actual_ratio_pct "
+            "tracks sl_pct, while precision and recall remain near 1.0."
         )
     return L
 
 
 def summary_workload(rows):
-    L = ["【现象总结与分析】"]
+    L = ["Summary and analysis"]
     if not rows:
         return L
     L.append(
-        "1) 读 100% 场景吞吐最高（query_latency_avg_ms 仅 7-10ms 量级）；写 100% 场景由于写路径包含"
-        "「读式定位 + 学习层/ART 插入 + 密文 bbox 重算」，update_latency_avg_ms ≈ locate_avg_ms + update_avg_ms，"
-        "远高于纯插入 update_avg_ms。"
+        "1) The 100% read workload has the highest throughput. The 100% write path combines lookup, "
+        "learning/ART insertion, and encrypted-bbox updates, so update_latency_avg_ms is approximately "
+        "locate_avg_ms + update_avg_ms and exceeds insertion-only update_avg_ms."
     )
     L.append(
-        "2) 混合比例 50/50、20/80、80/20 下，throughput_total 介于纯读和纯写之间，"
-        "且写比例越大、总延迟越接近 R0W100 场景 — 写延迟是混合负载的瓶颈，"
-        "对应 SUL-cipher 写路径的密文比较与同态加密重算开销。"
+        "2) Mixed-workload throughput lies between all-read and all-write results. Higher write ratios "
+        "approach R0W100 latency because encrypted comparisons and homomorphic recomputation make the "
+        "write path the bottleneck."
     )
     L.append(
-        "3) 口径核对：workload 的 update_avg_ms 列只算插入，与 sul_update 实验中的 update_avg_ms 同口径，"
-        "二者在串行重跑后数值一致，可作为交叉验证。"
+        "3) workload update_avg_ms measures insertion only and matches the sul_update definition; "
+        "consistent serial reruns provide a cross-check."
     )
     return L
 
 
 def summary_update(rows):
-    L = ["【现象总结与分析】"]
+    L = ["Summary and analysis"]
     if not rows:
         return L
     L.append(
-        "1) 纯插入 update_avg_ms 在 3-5ms 量级，与 ul_pct 基本无关（更新比例只是控制注入量，"
-        "单次插入耗时主要由学习层定位 + ART 插入 + 密文 bbox 重算决定）。"
+        "1) Insertion-only update_avg_ms is largely independent of ul_pct because ul_pct controls "
+        "volume, while per-insert cost comes from learning lookup, ART insertion, and bbox encryption."
     )
     L.append(
-        "2) art_cnt ≫ learn_cnt（约 19:1 量级）说明新点大多落入学习层 ε 误差之外、被路由到 ART 冲突层；"
-        "与论文设计一致。fail_cnt=0 说明插入路径稳定。"
+        "2) art_cnt greatly exceeding learn_cnt shows that most new points fall outside the learning "
+        "error window and route to ART, as designed. fail_cnt=0 indicates stable insertion."
     )
     L.append(
-        "3) post_query_avg_ms 随 ul_pct 上升整体温和增长（数据量更大、ART 节点更深），"
-        "post_recall 保持 ≈ 0.997 — 增量插入未影响范围查询正确性。"
+        "3) post_query_avg_ms grows moderately with ul_pct as the dataset and ART deepen, while "
+        "post_recall remains near 0.997."
     )
     L.append(
-        "4) 注意：前序「5 终端并发」会显著抬高/抖动 post_query_avg_ms，本次串行重跑数据已稳定。"
-        "middle_total/pruned 与 candidates_avg 在各 ul 下可见随插入量缓增的趋势，符合预期。"
+        "4) Concurrent runs can inflate and destabilize post_query_avg_ms; serial reruns are stable. "
+        "middle_total/pruned and candidates_avg rise gradually with insertion volume as expected."
     )
     return L
 
@@ -347,44 +345,44 @@ def main():
     up    = load_update()
 
     s1_rows = [
-        row_xml(["参数实验汇总（基线：N=20000, K=1024, err=4, dim=2，查询 sl=0.25%）"]),
+        row_xml(["Parameter experiments (baseline: N=20000, K=1024, err=4, dim=2, sl=0.25%)"]),
         row_xml([]),
     ]
     s1_rows.append(section(
-        "A. 数据规模 N 扫描（K=1024, err=4, dim=2, sl=0.25%）", p_n,
-        ["数据集","N","build_ms","file_bytes_kl1","learn_node","learn_leaf","learn_height",
+        "A. Dataset-size sweep (K=1024, err=4, dim=2, sl=0.25%)", p_n,
+        ["Dataset","N","build_ms","file_bytes_kl1","learn_node","learn_leaf","learn_height",
          "art_node","art_leaf","art_height","rq_avg_ms","candidates_avg","recall","precision"],
     ))
     s1_rows.append(section(
-        "B. 误差 err 扫描（N=20000, K=1024, dim=2, sl=0.25%）", p_err,
-        ["数据集","err","build_ms","file_bytes_kl1","learn_node","learn_leaf","learn_height",
+        "B. Error-bound sweep (N=20000, K=1024, dim=2, sl=0.25%)", p_err,
+        ["Dataset","err","build_ms","file_bytes_kl1","learn_node","learn_leaf","learn_height",
          "art_node","art_leaf","rq_avg_ms","candidates_avg","recall","precision"],
     ))
     s1_rows.append(section(
-        "C. 密钥长度 K 扫描（N=20000, err=4, dim=2, sl=0.25%）", p_k,
-        ["数据集","K(bit)","keygen_ms","build_ms","file_bytes_kl1","rq_avg_ms",
+        "C. Key-size sweep (N=20000, err=4, dim=2, sl=0.25%)", p_k,
+        ["Dataset","K(bit)","keygen_ms","build_ms","file_bytes_kl1","rq_avg_ms",
          "learning_ms_avg","spi_filter_ms_avg","recall"],
     ))
     s1_rows.append(section(
-        "D. 维度 dim 扫描（N=20000, K=1024, err=4, sl=0.25%）", p_dim,
-        ["数据集","dim","build_ms","file_bytes_kl1","learn_height","art_height",
+        "D. Dimension sweep (N=20000, K=1024, err=4, sl=0.25%)", p_dim,
+        ["Dataset","dim","build_ms","file_bytes_kl1","learn_height","art_height",
          "rq_avg_ms","candidates_avg","recall","precision"],
     ))
     s1_rows.append(section(
-        "E. 查询窗口 sl_pct 扫描（N=20000, K=1024, err=4, dim=2）", p_sl,
-        ["数据集","sl_pct(%)","rq_avg_ms","learning_ms_avg","spi_filter_ms_avg",
+        "E. Query-selectivity sweep (N=20000, K=1024, err=4, dim=2)", p_sl,
+        ["Dataset","sl_pct(%)","rq_avg_ms","learning_ms_avg","spi_filter_ms_avg",
          "candidates_avg","returned_avg","recall","precision","actual_ratio_pct"],
     ))
     for line in summary_param(p_n, p_err, p_k, p_dim, p_sl):
         s1_rows.append(row_xml([line]))
 
     s2_rows = [
-        row_xml(["场景实验汇总（workload：N=18000 base + 2000 ops，K=1024, err=4, dim=2）"]),
+        row_xml(["Workload experiments (N=18000 base + 2000 ops, K=1024, err=4, dim=2)"]),
         row_xml([]),
     ]
     s2_rows.append(section(
-        "读写比扫描（R/W ∈ {100/0, 80/20, 50/50, 20/80, 0/100}）", wl,
-        ["数据集","读比例(%)","写比例(%)","ops_total","total_ms",
+        "Read/write sweep (R/W in {100/0, 80/20, 50/50, 20/80, 0/100})", wl,
+        ["Dataset","Read ratio (%)","Write ratio (%)","ops_total","total_ms",
          "throughput_total","throughput_read","throughput_write",
          "query_latency_avg_ms","learning_query_avg_ms","art_query_avg_ms",
          "update_latency_avg_ms","locate_avg_ms","update_avg_ms"],
@@ -393,12 +391,12 @@ def main():
         s2_rows.append(row_xml([line]))
 
     s3_rows = [
-        row_xml(["更新实验汇总（sul_update：基础 N=20000, K=1024, err=4, dim=2，注入 ul_pct 增量）"]),
+        row_xml(["Update experiments (base N=20000, K=1024, err=4, dim=2, ul_pct increments)"]),
         row_xml([]),
     ]
     s3_rows.append(section(
-        "ul_pct 扫描（ul ∈ {0.25%, 0.5%, 1%, 2%, 5%, 10%, 20%}）", up,
-        ["数据集","ul_pct(%)","update_count","learn_cnt","art_cnt","fail_cnt",
+        "ul_pct sweep (ul in {0.25%, 0.5%, 1%, 2%, 5%, 10%, 20%})", up,
+        ["Dataset","ul_pct(%)","update_count","learn_cnt","art_cnt","fail_cnt",
          "update_avg_ms","save_ms","load_ms","file_bytes_kl1",
          "post_query_avg_ms","post_recall","candidates_avg",
          "middle_total_avg","middle_pruned_avg","spi_filter_ms_avg"],
@@ -414,20 +412,20 @@ def main():
         ' xmlns:x="urn:schemas-microsoft-com:office:excel"\n'
         ' xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"\n'
         ' xmlns:html="http://www.w3.org/TR/REC-html40">\n'
-        + sheet("参数实验", s1_rows) + "\n"
-        + sheet("场景实验", s2_rows) + "\n"
-        + sheet("更新实验", s3_rows) + "\n"
+        + sheet("Parameters", s1_rows) + "\n"
+        + sheet("Workloads", s2_rows) + "\n"
+        + sheet("Updates", s3_rows) + "\n"
         + "</Workbook>\n"
     )
     OUT.write_text(body, encoding="utf-8")
     print(f"[ok] wrote {OUT}  ({OUT.stat().st_size} bytes)")
-    print("     sheets: 参数实验 / 场景实验 / 更新实验")
+    print("     sheets: Parameters / Workloads / Updates")
     print(f"     rows:   N={len(p_n)}  err={len(p_err)}  K={len(p_k)}  dim={len(p_dim)}  sl={len(p_sl)}  workload={len(wl)}  update={len(up)}")
 
 
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "--retrain-runs":
-        # 新 schema 独立导出，避免将 beta 与历史 theta 实验混入旧工作簿。
+        # Export the new schema separately so beta runs do not mix with legacy theta runs.
         from plot_retrain import main as retrain_main
         retrain_main(sys.argv[2:] + ["--no-figures"])
     else:

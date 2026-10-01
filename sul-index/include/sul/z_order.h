@@ -8,13 +8,13 @@ class ZOrderEncoder {
 public:
     explicit ZOrderEncoder(int32_t dim_count);
 
-    // 编码为 128 位 z 值（6 维 = 96 位完整保留，无截断）
+    // Encode as a 128-bit Z-order value (all 96 bits of a 6D value are preserved).
     __uint128_t encode(const int32_t* coords) const;
 
-    // 直接编码到字节数组（适用于所有维度，大端序，ART key的正确来源）
+    // Encode directly to a big-endian byte array, the canonical ART key for every dimension.
     void encode_to_bytes(const int32_t* coords, uint8_t* out) const;
 
-    // 将 128 位 z 值转为 key_len 字节大端序数组（用于范围查询边界转换）
+    // Convert a 128-bit Z-order value to a key_len-byte big-endian range-query boundary.
     static void to_bytes(__uint128_t z, uint8_t* out, int32_t key_len);
 
     int32_t dim_count()    const { return dim_count_; }
@@ -23,11 +23,11 @@ public:
 
 private:
     int32_t dim_count_;
-    int32_t bits_per_dim_; // 固定为BITS_PER_DIM=16
-    int32_t key_len_;      // 实际key字节数 = bits_per_dim_ × dim_count_ / 8
+    int32_t bits_per_dim_; // Fixed at BITS_PER_DIM = 16.
+    int32_t key_len_;      // Actual key size = bits_per_dim_ * dim_count_ / 8 bytes.
 };
 
-// 将[0,1)浮点坐标缩放为int32整数（取低BITS_PER_DIM位参与z曲线编码）
+// Scale a [0, 1) coordinate to int32; its low BITS_PER_DIM bits enter the Z-order encoding.
 int32_t scale_unit_double_to_int32(double x);
 
 }

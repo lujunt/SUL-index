@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""串行执行两种插入分布；每个跑次连续记录 11 档 ul 检查点。"""
+"""Run two insertion distributions serially and record 11 ul checkpoints per run."""
 import argparse
 import csv
 import hashlib

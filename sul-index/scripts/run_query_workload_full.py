@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""串行执行五数据集查询负载热点 beta=1、ul=20..100 正式实验。"""
+"""Run serial beta=1 query-workload hotspot experiments at ul=20..100 on five datasets."""
 import argparse
 import csv
 import hashlib

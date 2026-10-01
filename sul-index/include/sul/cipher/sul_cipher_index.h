@@ -13,19 +13,19 @@
 
 namespace sul::cipher {
 
-// 前向声明：加密 ART 树
+// Forward declaration for the encrypted ART.
 class EncARTTree;
 
-// SUL-cipher-index 主类
+// Main SUL-cipher-index class.
 //
-// 设计要点
-//   1) 内部持有一份明文索引 plain_ 作为 DAP 私钥侧视图，构建逻辑完全复用明文版本
-//   2) 同时为每个数据结构维护一份加密镜像（enc_inner_layers_/enc_leaf_nodes_/enc_art_trees_）
-//   3) 查询时通过 SQQP/SARTQ/SHRQ 协议在加密镜像上完成定位，最终返回 EncDataPoint*
-//   4) OSM/SIC/SPI 协议位于 sul-index/agreements/agreements/，在本实现中以单线程逻辑模拟
+// Design:
+//   1) plain_ is the DAP private-key view and reuses the plaintext build logic.
+//   2) Each structure has an encrypted mirror.
+//   3) SQQP, SARTQ, and SHRQ locate records in the encrypted mirror.
+//   4) OSM, SIC, and SPI live under agreements/agreements and are simulated in one process.
 //
-// 双方角色：DSP 持有所有加密参数，DAP 持有 Paillier 私钥
-// 本实现将两者合并为同一进程，以注释 // DSP / // DAP 标记每段逻辑归属
+// The DSP holds encrypted parameters and the DAP holds the Paillier private key. This
+// implementation combines both roles and marks their logic with DSP/DAP comments.
 class SULCipherIndex {
 public:
     SULCipherIndex(const IndexConfig& config, CryptoContext& crypto);
@@ -36,50 +36,50 @@ public:
 
     void bulk_load(std::vector<DataPoint> points);
 
-    // 查询耗时拆分（微秒）
-    // 范围查询下 art_us = collect_us + spi_setup_us + spi_filter_us
-    // 点查询只填 learning_us / art_us（新字段保持 0）
+    // Query timing breakdown in microseconds. For range queries,
+    // art_us = collect_us + spi_setup_us + spi_filter_us. Point queries populate only
+    // learning_us and art_us.
     struct QueryStats {
-        double learning_us = 0.0;  // GPL/SQQP + 学习层叶子槽位扫描
-        double art_us      = 0.0;  // ART/SARTQ + 候选合并 + SPI 过滤（总和）
-        // —— 范围查询专用细分（点查询路径保持 0） ——
-        double collect_us    = 0.0; // 候选收集（含中间叶子的密文 bbox/SIC 剪枝）
-        double spi_setup_us  = 0.0; // ART 桶内：加密 query [low,high]（dim 次 Paillier 加密）
-        double spi_filter_us = 0.0; // ART 桶内：逐 candidate 跑 SPIrun
-        size_t candidates_total = 0; // SPI 评估前的候选点数
-        size_t candidates_kept  = 0; // SPI 通过的点数（= 结果集大小）
-        // —— Layer 1 OUTSIDE 剪枝统计 ——
-        size_t middle_leaves_total  = 0; // 跨叶子查询时的中间叶子总数
-        size_t middle_leaves_pruned = 0; // 因 coord-bbox OUTSIDE 而跳过的中间叶子数
+        double learning_us = 0.0;  // GPL/SQQP plus learning-leaf slot scan.
+        double art_us      = 0.0;  // Total ART/SARTQ, candidate merge, and SPI filtering.
+        // Range-query-only breakdown; point-query fields remain zero.
+        double collect_us    = 0.0; // Candidate collection, including encrypted bbox/SIC pruning.
+        double spi_setup_us  = 0.0; // Encrypt query bounds inside ART buckets.
+        double spi_filter_us = 0.0; // Run SPI over each candidate inside ART buckets.
+        size_t candidates_total = 0; // Candidates before SPI evaluation.
+        size_t candidates_kept  = 0; // Candidates accepted by SPI (the result size).
+        // Layer 1 OUTSIDE-pruning statistics.
+        size_t middle_leaves_total  = 0; // Middle leaves in a cross-leaf query.
+        size_t middle_leaves_pruned = 0; // Middle leaves rejected by the coordinate bbox.
         bool   hit_learning = false;
         bool   hit_art      = false;
     };
 
-    // 安全点查询：返回加密数据点指针，not-found 返回 nullptr
+    // Secure point query; return nullptr when no encrypted point matches.
     EncDataPoint* point_query(const int32_t* coords);
 
-    // 带耗时拆分的点查询；stats 为空指针等价于 point_query
+    // Point query with optional timing; a null stats pointer is equivalent to point_query.
     EncDataPoint* point_query_with_stats(const int32_t* coords,
                                          QueryStats* stats);
 
-    // 安全范围查询：返回所有命中加密数据点
+    // Secure range query returning all matching encrypted points.
     std::vector<EncDataPoint*> range_query(const int32_t* low,
                                            const int32_t* high);
 
-    // 带耗时拆分的范围查询
+    // Range query with a timing breakdown.
     std::vector<EncDataPoint*> range_query_with_stats(const int32_t* low,
                                                       const int32_t* high,
                                                       QueryStats* stats);
 
-    // 与完整查询共用候选收集及密文 bbox 剪枝；跳过 SPI，不返回命中统计。
+    // Reuse candidate collection and encrypted bbox pruning, but skip SPI and hit statistics.
     size_t count_range_candidates(const int32_t* low, const int32_t* high,
                                   QueryStats* stats = nullptr);
 
-    // 安全插入：先 SQQP 定位，再走学习层或 ART 层
+    // Secure insertion: locate with SQQP, then insert into the learning or ART layer.
     InsertResult insert(const int32_t* coords);
 
-    // 只读统计
-    // 加载模式没有 plain DataPoint，回落到 cipher pool 大小
+    // Read-only statistics. Loaded indexes have no plaintext DataPoint objects, so use
+    // the encrypted pool size instead.
     size_t total_points()           const {
         return is_loaded_ ? enc_points_.size() : plain_.total_points();
     }
@@ -90,17 +90,17 @@ public:
 
     const IndexConfig& config() const { return config_; }
 
-    // 暴露明文索引（仅供调试 / 真值验证用，生产环境应隐藏）
+    // Expose the plaintext index only for debugging and ground-truth validation.
     const SULPlainIndex& plain() const { return plain_; }
 
     // ========================================================================
-    // 序列化 / 反序列化
+    // Serialization and deserialization.
     // ========================================================================
-    // 二进制落盘：包含 IndexConfig + Paillier KeyPair + GPL 骨架 + 全部密文
+    // Persist IndexConfig, the Paillier key pair, the GPL skeleton, and all ciphertexts.
     void save_to_file(const std::string& path) const;
 
-    // 从文件加载：返回 (CryptoContext, SULCipherIndex)
-    // 加载后索引为 "查询只读"，调用 insert 会返回 Failed
+    // Load (CryptoContext, SULCipherIndex) from a file. Loaded indexes are query-only;
+    // insert returns Failed.
     static std::pair<std::unique_ptr<CryptoContext>,
                      std::unique_ptr<SULCipherIndex>>
         load_from_file(const std::string& path);
@@ -123,27 +123,27 @@ private:
     std::vector<std::unique_ptr<EncDataPoint>> enc_points_;
     std::vector<std::unique_ptr<EncDataPoint>> enc_inserted_points_;
 
-    // 每叶子的明文 bbox（仅 DAP 侧持有，用于 insert 增量同步 cipher 加密 bbox）
+    // DAP-only plaintext bbox for each leaf, used to update encrypted bboxes on insertion.
     // size = leaf_count × dim_count
     std::vector<std::vector<int32_t>> plain_bbox_lo_;
     std::vector<std::vector<int32_t>> plain_bbox_hi_;
 
-    // 反序列化加载后置为 true：insert 直接拒绝（plain 骨架不持有 DataPoint）
+    // True after deserialization; insertion is rejected because the skeleton has no DataPoints.
     bool is_loaded_ = false;
 
     void encrypt_data_point(const DataPoint& src, EncDataPoint& dst);
     void build_encrypted_mirror();
 
-    // SQQP：返回目标叶子下标 leaf_idx
+    // SQQP returns the target leaf index.
     int32_t sqqp(__uint128_t plain_v);
 
-    // SARTQ：在指定 ART 树上对加密 key_bytes 做安全点查询
+    // SARTQ securely searches encrypted key_bytes in the selected ART.
     EncDataPoint* sartq(int32_t art_tree_idx,
                         const std::vector<Ciphertext>& enc_key_bytes,
                         const uint8_t* plain_key_bytes);
 };
 
-// 加密 ART 树
+// Encrypted ART.
 class EncARTTree {
 public:
     explicit EncARTTree(int32_t key_len, CryptoContext& crypto);
@@ -154,7 +154,7 @@ public:
 
     void insert(EncDataPoint* edp, const uint8_t* plain_key_bytes);
 
-    // 安全点查询：返回命中数据点或 nullptr
+    // Secure point query returning a matched point or nullptr.
     EncDataPoint* search(const std::vector<Ciphertext>& enc_key_bytes,
                          const uint8_t* plain_key_bytes,
                          ophelib::PaillierFast& paillier);
@@ -169,11 +169,11 @@ public:
     size_t leaf_count() const { return leaf_count_; }
     void*  root()       const { return root_; }
 
-    // ====== 序列化辅助 ======
-    // 反序列化用：清空当前树（销毁 root_ 子树并归零计数）
+    // Serialization helpers.
+    // Clear the tree and counters before deserialization.
     void clear();
 
-    // 反序列化用：外部构造好 root 子树后，整体安装到本树
+    // Install a root subtree constructed by the deserializer.
     void set_root(void* root, size_t inner_count, size_t leaf_count) {
         root_ = root; inner_count_ = inner_count; leaf_count_ = leaf_count;
     }

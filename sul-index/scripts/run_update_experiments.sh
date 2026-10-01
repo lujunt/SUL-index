@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# 新重训练连续流入口：直接传入已准备的 base/insert/eval/monitor 文件。
-# 批量实验通过循环调用本脚本；每次调用保留独立 run-dir，失败码原样传播。
+# Continuous retraining entry point using prepared base, insert, evaluation, and monitor files.
+# Batch experiments invoke this script repeatedly; each run keeps its own directory and exit status.
 set -euo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 if [[ $# -lt 4 ]]; then

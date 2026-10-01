@@ -1,21 +1,19 @@
 #!/usr/bin/env python3
-"""5 个数据集（UNI / ABUS / MBF / PLUT / USAC）二维分布可视化
+"""Visualize the 2D distributions of UNI, ABUS, MBF, PLUT, and USAC.
 
-依赖:
+Dependencies:
     pip install matplotlib numpy
 
-用法（从 sul-index/ 目录执行）:
+Usage from sul-index/:
     python3 scripts/plot_distributions.py
-    python3 scripts/plot_distributions.py --N 100000        # 改用更大数据集
+    python3 scripts/plot_distributions.py --N 100000        # use larger datasets
     python3 scripts/plot_distributions.py --out figs/dist.png
 
-产出:
-    scripts/distributions.png   (默认输出路径)
+Output:
+    scripts/distributions.png (default)
 
-读图要点:
-    - 每个子图: 散点 + 标题写坐标范围
-    - 散点 alpha=0.25, 直观看聚簇程度
-    - 5 数据集横向对比: UNI 几乎填满 [0,1], PLUT 极度聚簇在角落
+Each subplot is a scatter plot labeled with its coordinate range. The shared overlay
+highlights clustering differences across all five datasets.
 """
 from __future__ import annotations
 import argparse
@@ -29,7 +27,7 @@ try:
     import matplotlib.pyplot as plt
     import numpy as np
 except ImportError as e:
-    print(f"[error] 缺少依赖: {e.name}", file=sys.stderr)
+    print(f"[error] missing dependency: {e.name}", file=sys.stderr)
     print("[fix] pip install matplotlib numpy", file=sys.stderr)
     sys.exit(1)
 
@@ -60,7 +58,7 @@ def load_xy(path: Path) -> tuple[np.ndarray, np.ndarray]:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--N", type=int, default=20000,
-                    help="数据集规模（默认 20000）")
+                    help="dataset size (default: 20000)")
     ap.add_argument("--datasets-dir", type=Path, default=Path("datasets"))
     ap.add_argument("--out", type=Path, default=Path("scripts/distributions.png"))
     ap.add_argument("--alpha", type=float, default=0.25)
@@ -69,7 +67,7 @@ def main() -> int:
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
 
-    # 2 行 × 3 列；最后 1 格作为 5 数据集散点叠加对比
+    # Two rows by three columns; the last panel overlays all five datasets.
     fig, axes = plt.subplots(2, 3, figsize=(16, 10))
     fig.suptitle(f"5 datasets coordinate distribution (dim=2, N={args.N})",
                  fontsize=14, y=0.995)
@@ -98,7 +96,7 @@ def main() -> int:
             fontsize=10,
         )
 
-    # 第 6 格：所有 5 数据集叠加散点
+    # Sixth panel: overlay all five datasets.
     ax = axes[1][2]
     for stem, sfx, color, label in DATASETS:
         path = args.datasets_dir / f"{stem}_{args.N}_{sfx}_2.csv"

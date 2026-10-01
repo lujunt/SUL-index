@@ -22,14 +22,20 @@ compile_commands.json
 *.swp
 *~
 
-# agreements 旧 demo 二进制
+# Legacy agreement demo binaries
 sul-index/agreements/agreements/sic
 sul-index/agreements/agreements/spi
 
-# 实验产物（可重新生成）：密文索引快照 + record CSV
+# Reproducible experiment artifacts: encrypted index snapshots, records, datasets, and queries
 sul-index/indexes/
 sul-index/record/
+sul-index/datasets/
+sul-index/query/
 
 # OS noise
 .DS_Store
 Thumbs.db
+
+# Python experiment/test caches
+__pycache__/
+*:Zone.Identifier

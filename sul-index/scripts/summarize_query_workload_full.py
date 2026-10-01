@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""校验并合并五数据集查询负载热点连续实验记录。"""
+"""Validate and combine continuous query-workload hotspot records for five datasets."""
 import argparse
 import csv
 import json

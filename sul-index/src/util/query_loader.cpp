@@ -49,8 +49,8 @@ std::string format_ratio_pct(double pct) {
     return buf;
 }
 
-// 给定 center 与 edge，计算每维平移后的窗口 [lo, hi]（均归一化到 [0,1]）
-// 输出与最终写盘格式严格一致，count_in_window 复用此 helper 保证统计自洽
+// Build a shifted, normalized [lo, hi] window from center and edge. The output exactly
+// matches the persisted format so count_in_window and generated files remain consistent.
 void compute_window(const DataPoint& center, int32_t DIM,
                     double edge, double scale_d,
                     std::vector<double>& lo_v,
@@ -69,7 +69,7 @@ void compute_window(const DataPoint& center, int32_t DIM,
     }
 }
 
-// 暴力扫数据集，统计落入闭区间 [lo, hi]^DIM 的点数（坐标归一化到 [0,1]）
+// Brute-force the dataset and count points in the normalized closed window [lo, hi]^DIM.
 int32_t count_in_window(const std::vector<DataPoint>& data,
                         const std::vector<double>& lo_v,
                         const std::vector<double>& hi_v,
@@ -87,8 +87,8 @@ int32_t count_in_window(const std::vector<DataPoint>& data,
     return count;
 }
 
-// 二分搜索 edge，使 count_in_window 落入 [target*(1-tol), target*(1+tol)]
-// 30 轮收敛失败则返回最接近 target 的 edge（best-effort + converged=false）
+// Binary-search edge until the hit count is within target*(1 +/- tol). After 30 failed
+// rounds, return the closest edge with converged=false.
 struct BisectResult { double edge; int32_t hits; bool converged; };
 
 BisectResult bisect_edge_for_target(const std::vector<DataPoint>& data,
@@ -220,7 +220,7 @@ size_t generate_query_files(const std::string& dataset_path,
     const std::string stem = dataset_stem(dataset_path);
 
     const std::vector<double> RATIO_PCTS = {0.25, 0.5, 1.0, 2.0, 4.0};
-    constexpr double TOL = 0.05;  // ±5% 容差
+    constexpr double TOL = 0.05;  // +/- 5% tolerance.
     size_t written = 0;
     std::mt19937 rng(seed);
     std::uniform_int_distribution<int32_t> pick(0, N - 1);
@@ -235,12 +235,11 @@ size_t generate_query_files(const std::string& dataset_path,
         if (!out_path.empty() && out_path.back() != '/' && out_path.back() != '\\') {
             out_path.push_back('/');
         }
-        // 命名：<stem>_dim{D}_<ratio>.csv
-        // 维度放中间——下游 parse_sl_pct_from_path 取最后 "_" 后内容，仍能正确解析 ratio
+        // Name: <stem>_dim{D}_<ratio>.csv. Keeping the ratio last preserves downstream parsing.
         out_path += stem + "_dim" + std::to_string(DIM)
                   + "_" + format_ratio_pct(pct) + ".csv";
 
-        // 先把所有窗口算好（target_hits 模式下要先跑完二分才能写完整 header）
+        // Compute every window before writing the complete target_hits header.
         std::vector<std::vector<double>> all_lo, all_hi;
         all_lo.reserve(n_queries);
         all_hi.reserve(n_queries);
@@ -251,10 +250,9 @@ size_t generate_query_files(const std::string& dataset_path,
         int32_t converged_cnt = 0;
         int32_t skipped_cnt   = 0;
 
-        // target_hits 模式：未收敛窗口 skip 重试，直到收齐 n_queries 或达到 attempts 上限
-        // uniform_volume 模式：每次循环必收（无验证），等同于原 for-loop
+        // target_hits retries unconverged windows; uniform_volume accepts every window.
         const int32_t MAX_ATTEMPTS = target_hits_mode
-            ? n_queries * 30   // 30:1 重试预算
+            ? n_queries * 30   // 30:1 retry budget.
             : n_queries;
         int32_t attempts = 0;
 
@@ -270,7 +268,7 @@ size_t generate_query_files(const std::string& dataset_path,
                                                   target, TOL, edge_uniform);
                 if (!br.converged) {
                     ++skipped_cnt;
-                    continue;  // ← 实测命中数偏离容差，丢弃该窗口
+                    continue;  // Discard a window whose observed hits exceed tolerance.
                 }
                 edge_used = br.edge;
                 hits_used = br.hits;
@@ -291,10 +289,10 @@ size_t generate_query_files(const std::string& dataset_path,
 
         if (target_hits_mode
             && static_cast<int32_t>(all_lo.size()) < n_queries) {
-            std::cerr << "[error] " << out_path << ": 尝试 " << attempts
-                      << " 次仅收齐 " << all_lo.size() << "/" << n_queries
-                      << " 个合规窗口（skipped=" << skipped_cnt
-                      << "）。建议放宽 tol 或换数据集。\n";
+            std::cerr << "[error] " << out_path << ": collected only " << all_lo.size()
+                      << "/" << n_queries << " valid windows after " << attempts
+                      << " attempts (skipped=" << skipped_cnt
+                      << "). Increase tol or use another dataset.\n";
         }
 
         if (static_cast<int32_t>(all_lo.size()) != n_queries)
@@ -302,7 +300,7 @@ size_t generate_query_files(const std::string& dataset_path,
         std::ofstream ofs(out_path);
         if (!ofs) throw std::runtime_error("generate_query_files: cannot write " + out_path);
 
-        // # 注释头（load 时会跳过）
+        // Comment header ignored by the loader.
         ofs << "# dataset=" << dataset_path
             << " N=" << N
             << " dim=" << DIM

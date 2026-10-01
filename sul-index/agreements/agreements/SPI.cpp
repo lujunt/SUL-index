@@ -6,13 +6,8 @@
 
 using namespace ophelib;
 
-// SPI 协议实现：逐维度 SIC 比较
-// 对每个维度 d：
-//   1) cmp_low  = SIC(ql[d], coords[d])  应返回 1（ql<=coords）
-//   2) cmp_high = SIC(coords[d], qr[d])  应返回 1（coords<=qr）
-// 优化：单维内 cmp_low / cmp_high 并行执行（额外线程跑 cmp_high，主线程跑 cmp_low）
-// 跨维度保持顺序——保留维度间早返回（dim 0 失败时不进入 dim 1）
-// 任一维度不满足则点不在范围内
+// SPI implementation using SIC per dimension. cmp_low and cmp_high run in parallel within
+// a dimension; dimensions remain sequential to preserve early exit on the first failure.
 Integer SPIrun(const std::vector<Ciphertext>& enc_coords,
                const std::vector<Ciphertext>& enc_ql,
                const std::vector<Ciphertext>& enc_qr,

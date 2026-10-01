@@ -9,7 +9,7 @@ using namespace ophelib;
 
 extern ophelib::Ciphertext global_enc_zero;
 extern ophelib::Ciphertext global_enc_one;
-// 传入真实的明文特征，模拟 OSM 理论上的 O(1) 在线开销
+// Use the actual plaintext feature to simulate OSM's theoretical O(1) online cost.
 Ciphertext OSMrun(Integer x_int, Integer y_int, PaillierFast& paillier);
 
 #endif // OSM_H

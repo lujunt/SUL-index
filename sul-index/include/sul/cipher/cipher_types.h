@@ -13,32 +13,32 @@ namespace sul::cipher {
 using ophelib::Ciphertext;
 
 // ============================================================================
-// 加密数据点：所有字段（坐标、z 值、key 字节）均为 Paillier 密文
+// Encrypted data point: coordinates, Z-order value, and key bytes are Paillier ciphertexts.
 // ============================================================================
 struct EncDataPoint {
-    std::vector<Ciphertext> dimensions;   // 加密坐标，size = dim_count
-    Ciphertext               z_value;      // 加密 z 曲线值
-    std::vector<Ciphertext> key_bytes;    // 加密 key 字节，size = key_len
+    std::vector<Ciphertext> dimensions;   // Encrypted coordinates; size = dim_count.
+    Ciphertext               z_value;      // Encrypted Z-order value.
+    std::vector<Ciphertext> key_bytes;    // Encrypted key bytes; size = key_len.
     int32_t                  dim_count = 0;
-    int32_t                  orig_id   = -1; // 仅供日志/调试，不参与协议
+    int32_t                  orig_id   = -1; // Logging/debugging only; not part of the protocol.
 };
 
 // ============================================================================
-// 加密 GPL 内部节点：slope/intercept/key/child_ids 均加密；
-// child_start/child_count 为 DSP 内部明文结构索引（不暴露给查询协议）
+// Encrypted GPL inner node. slope, intercept, key, and child_ids are encrypted;
+// child_start and child_count are DSP-private structural indexes.
 // ============================================================================
 struct EncGPLInnerNode {
     Ciphertext key;
-    Ciphertext slope;           // 加密的 SCALE×slope 整数化值
-    Ciphertext intercept;       // 加密的 SCALE×intercept 整数化值
+    Ciphertext slope;           // Encrypted integer SCALE * slope.
+    Ciphertext intercept;       // Encrypted integer SCALE * intercept.
     int32_t    child_start = 0;
     int32_t    child_count = 0;
-    std::vector<Ciphertext> child_ids; // 加密子节点 ID（0..child_count-1）
+    std::vector<Ciphertext> child_ids; // Encrypted child IDs from 0 to child_count - 1.
 };
 
 // ============================================================================
-// 加密 GPL 叶子节点
-// 注：bitmap (occupied) 维持明文，便于 DSP 快速判断槽位有效性（论文设定一致）
+// Encrypted GPL leaf. The occupied bitmap remains plaintext so the DSP can test slots
+// efficiently, matching the paper's model.
 // ============================================================================
 struct EncGPLLeafNode {
     Ciphertext key;
@@ -49,16 +49,15 @@ struct EncGPLLeafNode {
     int32_t slot_count    = 0;
     int32_t filled_count  = 0;
     int32_t art_tree_idx  = -1;
-    // ciphertext coord bbox：含本叶子所有 GPL 槽位 + ART 子树点
-    // 用于范围查询中间叶子 OUTSIDE 剪枝（通过 SIC 完成比较，不向 DSP 泄露 coord 范围）
-    // 大小 = config_.dim_count
+    // Encrypted coordinate bounding box over GPL slots and ART points in this leaf.
+    // SIC uses it to prune OUTSIDE middle leaves without exposing ranges to the DSP.
+    // Size = config_.dim_count.
     std::vector<Ciphertext> coord_lo_enc;
     std::vector<Ciphertext> coord_hi_enc;
 };
 
 // ============================================================================
-// 加密 ART 节点：keys[] 与 child_ids[] 均加密
-// 用与明文版一致的 ARTNodeType 区分容量等级
+// Encrypted ART node. keys and child_ids are encrypted; ARTNodeType identifies capacity.
 // ============================================================================
 struct EncARTNodeHeader { ARTNodeType type; };
 
@@ -68,12 +67,12 @@ struct EncARTLeaf {
     std::vector<EncDataPoint*> duplicates;
 };
 
-// 注：plain_keys 是 DAP 私有视图（与 keys[] 一一对应），
-//    DSP 在论文设定下不持有；本实现将两侧合并为单进程，故直接作为字段保存
+// plain_keys is the DAP-private view corresponding to keys. A DSP would not hold it;
+// this single-process implementation stores it directly because both roles are combined.
 struct EncARTNode4 {
     EncARTNodeHeader header;
     std::vector<Ciphertext> keys;
-    std::vector<uint8_t>    plain_keys; // size = 4, DAP 视图
+    std::vector<uint8_t>    plain_keys; // Size = 4; DAP view.
     uint8_t  bitmap;
     void*    children[4];
     std::vector<Ciphertext> child_ids;

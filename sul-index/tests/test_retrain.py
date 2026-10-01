@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""真实密文端到端测试：两个周期、固定评估集、重复记录、落盘、失败输入。"""
+"""Encrypted end-to-end test covering two cycles, fixed evaluation, persistence, and invalid input."""
 import csv
 import json
 import math

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""从同源池生成新增数据，保留既有 base，使用与 C++ 一致的坐标量化。"""
+"""Generate new data from the source pool while preserving the base and C++ quantization."""
 import argparse
 import bisect
 import csv
@@ -230,15 +230,16 @@ def main():
     ap.add_argument('--base', required=True); ap.add_argument('--source', required=True)
     ap.add_argument('--output', required=True)
     ap.add_argument('--mode', choices=['matched', 'hotspot'], required=True)
-    ap.add_argument('--count', required=True, help='新增条数；hotspot 可用 all')
+    ap.add_argument('--count', required=True, help='number of new rows; hotspot accepts all')
     ap.add_argument('--seed', type=int, default=42)
     ap.add_argument('--strata', type=int, default=64)
     ap.add_argument('--hot-low', type=float, default=.45)
     ap.add_argument('--hot-high', type=float, default=.55)
     ap.add_argument('--hotspot-policy', choices=['fixed', 'auto-center', 'query-workload'],
-                    default='fixed', help='fixed 使用给定分位区间；auto-center 选择靠近 base Z '
-                    '中位数的最小连续窗口；query-workload 按监测窗口覆盖次数选择热点')
-    ap.add_argument('--query-file', help='query-workload 热点使用的固定监测窗口')
+                    default='fixed', help='fixed uses the requested quantile interval; auto-center '
+                    'selects the smallest contiguous window near the median base Z value; '
+                    'query-workload ranks hotspots by monitoring-window coverage')
+    ap.add_argument('--query-file', help='fixed monitoring windows for query-workload hotspots')
     args = ap.parse_args()
     try:
         if args.strata < 1 or not 0 <= args.hot_low < args.hot_high <= 1:

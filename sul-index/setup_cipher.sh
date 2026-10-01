@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
-# SUL-cipher-index 依赖安装脚本（Ubuntu 22.04）
+# SUL-cipher-index dependency installer (Ubuntu 22.04)
 #
-# 用途：
-#   1) 安装 ophelib 编译依赖（NTL、GMP、OpenMP、cmake 等）
-#   2) 自动从 GitHub clone 并构建 ophelib，将 libophelib.a 放到 third_party/ophelib/lib/
-#   3) 校验所有就位后给出构建命令
+# Purpose:
+#   1) Install ophelib build dependencies (NTL, GMP, OpenMP, CMake, and others).
+#   2) Clone and build ophelib, placing libophelib.a under third_party/ophelib/lib/.
+#   3) Verify the installation and show the project build command.
 #
-# 用法：
+# Usage:
 #   chmod +x setup_cipher.sh
 #   ./setup_cipher.sh
 #
-# 之后构建本项目：
+# Then build this project:
 #   mkdir -p build && cd build
 #   cmake .. && make -j
 
@@ -23,26 +23,26 @@ OPHELIB_INCLUDE="${OPHELIB_DIR}/include/ophelib"
 OPHELIB_REPO="https://github.com/abb-iss/ophelib.git"
 OPHELIB_SRC_DIR="${OPHELIB_DIR}/_src"
 
-echo "=== Step 1: 安装系统依赖（需要 sudo） ==="
-echo "  软件包：build-essential cmake m4 libtool-bin libgmp-dev libntl-dev"
+echo "=== Step 1: Install system dependencies (requires sudo) ==="
+echo "  Packages: build-essential cmake m4 libtool-bin libgmp-dev libntl-dev"
 sudo apt-get update
 sudo apt-get install -y build-essential cmake m4 libtool-bin libgmp-dev libntl-dev git
 
 echo
-echo "=== Step 2: 校验 ophelib 头文件 ==="
+echo "=== Step 2: Verify ophelib headers ==="
 if [[ ! -d "${OPHELIB_INCLUDE}" ]]; then
-    echo "[ERROR] 未找到 ${OPHELIB_INCLUDE}/"
-    echo "        本仓库已 vendored ophelib 头文件，请确认 third_party/ 目录完整"
+    echo "[ERROR] ${OPHELIB_INCLUDE}/ was not found"
+    echo "        This repository vendors the ophelib headers; verify that third_party/ is complete"
     exit 1
 fi
 echo "  OK: ${OPHELIB_INCLUDE}/"
 
 echo
-echo "=== Step 3: 构建 ophelib 静态库 ==="
+echo "=== Step 3: Build the ophelib static library ==="
 if [[ -f "${OPHELIB_LIB}" ]]; then
-    echo "  已存在: ${OPHELIB_LIB}，跳过构建"
+    echo "  Already present: ${OPHELIB_LIB}; skipping the build"
 else
-    echo "  从 ${OPHELIB_REPO} 克隆并构建（首次运行）..."
+    echo "  Cloning and building ${OPHELIB_REPO} (first run)..."
     mkdir -p "${OPHELIB_DIR}/lib"
     if [[ ! -d "${OPHELIB_SRC_DIR}" ]]; then
         git clone --depth 1 "${OPHELIB_REPO}" "${OPHELIB_SRC_DIR}"
@@ -54,18 +54,18 @@ else
 fi
 
 echo
-echo "=== Step 4: 构建（可选） ==="
-read -r -p "现在构建 sul_cipher_demo / sul_compare_demo? [y/N] " ans
+echo "=== Step 4: Build the project (optional) ==="
+read -r -p "Build sul_cipher_demo and sul_compare_demo now? [y/N] " ans
 if [[ "${ans}" =~ ^[Yy]$ ]]; then
     cd "${SCRIPT_DIR}"
     mkdir -p build && cd build
     cmake ..
     make -j sul_cipher_demo sul_compare_demo
     echo
-    echo "运行示例："
+    echo "Example commands:"
     echo "  ./sul_cipher_demo  /path/to/uniform_*.csv [paillier_key=1024]"
     echo "  ./sul_compare_demo /path/to/uniform_*.csv [paillier_key=1024]"
 fi
 
 echo
-echo "完成。"
+echo "Done."

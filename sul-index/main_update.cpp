@@ -1,4 +1,4 @@
-// 选择率自适应重训练：检测集 m=ceil(1/s)，评估集固定 100 条。
+// Selectivity-adaptive retraining: m=ceil(1/s) monitoring queries and 100 fixed evaluation queries.
 #include "sul/cipher/sul_cipher_index.h"
 #include "sul/util/csv_loader.h"
 #include "sul/util/query_loader.h"
@@ -208,7 +208,7 @@ struct Measurement {
     size_t hits = 0;
     double query_ms = 0, wall_ms = 0;
     double learning_ms = 0, collect_ms = 0, spi_setup_ms = 0, spi_filter_ms = 0;
-    std::vector<double> round_query_ms; // 每轮 m 条查询调用的墙钟时间之和，排除预热与校验。
+    std::vector<double> round_query_ms; // Wall time for each round of m queries, excluding warm-up and validation.
     std::vector<double> round_learning_ms, round_collect_ms, round_spi_setup_ms, round_spi_filter_ms;
     double avg(size_t count) const { return query_ms / count; }
     double selectivity(size_t count, size_t n) const { return 100.0 * hits / count / n; }
@@ -235,7 +235,7 @@ Measurement measure(SULCipherIndex& idx, const util::QueryFile& queries,
             if (stats.candidates_total > static_cast<uint64_t>(INT64_MAX - round_W))
                 throw std::overflow_error("candidate sum overflow");
             round_W += static_cast<int64_t>(stats.candidates_total);
-            // 独立坐标扫描：保留不同 ID 的同坐标记录，不以 plain 查询作真值。
+            // Independent coordinate scan preserves distinct IDs at identical coordinates.
             std::vector<int32_t> expected, actual;
             for (const auto& dp : records) {
                 bool inside = true;
@@ -464,7 +464,7 @@ size_t phase(const Options& o, const util::CsvLoadResult& base, const util::CsvL
             event_snap = snapshot(*next, o.dir / filename, o, eval, records, eval_post);
             snapshot_ms += event_snap.wall_ms;
         }
-        idx.swap(next); next.reset(); // 仅在构建、查询及快照往返校验均成功后替换。
+        idx.swap(next); next.reset(); // Replace only after build, query, and snapshot checks all succeed.
         ++count;
         events.row({str(count),str(o.ul),str(success),str(100.0L * success / base.data.size()),str(records.size()),
             str(W0),str(pre.W),str(decision.delta),str(o.beta),str(decision.rho),str(post.W),

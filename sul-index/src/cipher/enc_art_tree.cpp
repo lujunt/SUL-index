@@ -268,12 +268,9 @@ void* EncARTTree::expand_node48_to_node256(EncARTNode48* n48) {
 }
 
 // ============================================================================
-// SARTQ：安全 ART 点查询（plan §16.2）
-// 每层流程：
-//   DSP：标记向量 marker[i] = (enc_keys[i] - enc_k) * 同一随机噪声
-//        子树 ID 也加同一噪声（密文加噪不影响"零位置识别"）
-//   DAP：解密标记向量，零位置即目标子节点；若全部非零则返回 null
-// 简化：DAP 直接由 paillier 解密
+// SARTQ secure ART point query. At each level the DSP blinds marker differences and
+// subtree IDs with the same random value. The DAP decrypts markers and selects the zero
+// position, or returns null when all are nonzero. This implementation decrypts directly.
 // ============================================================================
 EncDataPoint* EncARTTree::search(const std::vector<Ciphertext>& enc_key_bytes,
                                   const uint8_t* /*plain_key_bytes*/,
@@ -317,11 +314,11 @@ EncDataPoint* EncARTTree::search(const std::vector<Ciphertext>& enc_key_bytes,
 
         if (active_slots.empty()) return nullptr;
 
-        // DSP: 标记向量 + 同一随机噪声
+        // DSP: marker vector plus shared random blinding.
         long noise_long = static_cast<long>((rng() >> 1) % 1000003 + 1);
         ophelib::Integer noise(noise_long);
 
-        // DAP: 解密 marker，找到 0 位置
+        // DAP: decrypt markers and locate the zero position.
         int32_t match_idx = -1;
         for (size_t i = 0; i < active_keys.size(); ++i) {
             Ciphertext marker = (*active_keys[i] - enc_k) * noise;
@@ -369,7 +366,7 @@ std::vector<EncDataPoint*> EncARTTree::collect_all() const {
     return out;
 }
 
-// 范围收集（明文层面遍历 plain_keys，调用方负责 SPI 维度过滤）
+// Collect a range by traversing plain_keys; the caller performs dimensional SPI filtering.
 void EncARTTree::range_collect(void* node, int32_t depth,
                                 const uint8_t* low, const uint8_t* high,
                                 bool tight_low, bool tight_high,

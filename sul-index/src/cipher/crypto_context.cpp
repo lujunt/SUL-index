@@ -3,8 +3,7 @@
 #include <cmath>
 #include <cstdio>
 
-// agreements/OSM.cpp 和 agreements/SIC.cpp 使用的全局加密 0/1 密文
-// 这两个 extern 变量由 CryptoContext 构造时填充
+// Global encrypted zero and one used by OSM.cpp and SIC.cpp; CryptoContext initializes them.
 ophelib::Ciphertext global_enc_zero;
 ophelib::Ciphertext global_enc_one;
 
@@ -17,13 +16,13 @@ CryptoContext::CryptoContext(int key_size) {
     enc_zero_ = std::make_unique<ophelib::Ciphertext>(paillier_->encrypt(ophelib::Integer(0)));
     enc_one_  = std::make_unique<ophelib::Ciphertext>(paillier_->encrypt(ophelib::Integer(1)));
 
-    // 同步 OSM/SIC 协议依赖的全局密文常量
+    // Synchronize the global ciphertext constants required by OSM and SIC.
     global_enc_zero = *enc_zero_;
     global_enc_one  = *enc_one_;
 }
 
 CryptoContext::CryptoContext(int /*key_size*/, const ophelib::KeyPair& kp) {
-    // PaillierFast(KeyPair) 内部解析 pub/priv 并完成预计算
+    // PaillierFast(KeyPair) parses public/private keys and performs precomputation.
     paillier_ = std::make_unique<ophelib::PaillierFast>(kp);
 
     enc_zero_ = std::make_unique<ophelib::Ciphertext>(paillier_->encrypt(ophelib::Integer(0)));
@@ -38,7 +37,7 @@ ophelib::Ciphertext CryptoContext::encrypt_i64(int64_t v) const {
 }
 
 ophelib::Integer CryptoContext::u128_to_integer(__uint128_t v) {
-    // hex 字符串：每 64 位最多 16 个十六进制字符
+    // A 64-bit word occupies at most 16 hexadecimal digits.
     if (v == 0) return ophelib::Integer(0);
     uint64_t hi = static_cast<uint64_t>(v >> 64);
     uint64_t lo = static_cast<uint64_t>(v);
@@ -66,14 +65,14 @@ ophelib::Integer CryptoContext::decrypt(const ophelib::Ciphertext& ct) const {
 }
 
 ophelib::Integer CryptoContext::scale_float(double v) const {
-    // 四舍五入到最近整数，避免浮点误差累积
+    // Round to the nearest integer to avoid accumulated floating-point error.
     double scaled = v * static_cast<double>(SCALE);
     long rounded  = static_cast<long>(std::llround(scaled));
     return ophelib::Integer(rounded);
 }
 
 double CryptoContext::unscale_float(const ophelib::Integer& v) const {
-    // 仅用于调试输出；to_long 可能溢出，但 SCALE×slope/intercept 在常见数据规模下安全
+    // Debug output only. to_long may overflow, but scaled model parameters fit typical datasets.
     return static_cast<double>(v.to_long()) / static_cast<double>(SCALE);
 }
 

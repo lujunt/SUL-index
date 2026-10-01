@@ -1,10 +1,10 @@
-// 查询窗口生成器
-// 用法：./sul_query_gen <dataset_csv> [n_queries=100] [output_dir=query] [--target-hits]
-// 自动生成 5 个查询文件（0.25% / 0.5% / 1% / 2% / 4% 选择率），
-// 文件名 <stem>_dim{d}_<ratio_pct>.csv，stem 取数据集前两个 _ 分量，dim 取数据集实际维度
+// Query-window generator.
+// Usage: ./sul_query_gen <dataset_csv> [n_queries=100] [output_dir=query] [--target-hits]
+// Generates five selectivity files (0.25%, 0.5%, 1%, 2%, and 4%) named
+// <stem>_dim{d}_<ratio_pct>.csv.
 //
-// --target-hits: 二分搜索 edge 使每条 query 实测命中数 ≈ N × ratio（±5% 容差），
-//                适合 skewed 数据；默认按 uniform 体积比反推 edge（在 skewed 上失真）
+// --target-hits binary-searches edge length for N*ratio hits within 5%, which is useful
+// for skewed data. The default derives edge length from uniform volume.
 
 #include "sul/util/query_loader.h"
 
@@ -43,8 +43,8 @@ int main(int argc, char** argv) {
     if (pos.empty()) {
         std::cerr << "Usage: " << argv[0]
                   << " <dataset_csv> [n_queries=100] [output_dir=query] [--target-hits] [--seed 42]\n"
-                  << "  --target-hits: 按目标命中数 N×ratio 二分 edge（适合 skewed）；\n"
-                  << "                 默认按 uniform 体积比 edge=ratio^(1/dim)\n";
+                  << "  --target-hits: binary-search edge for N*ratio hits (recommended for skewed data);\n"
+                  << "                 default: edge=ratio^(1/dim) from uniform volume\n";
         return 1;
     }
     const std::string dataset_path = pos[0];
@@ -56,7 +56,7 @@ int main(int argc, char** argv) {
               << "  n_queries  = " << n_queries << "\n"
               << "  output_dir = " << output_dir << "\n"
               << "  mode       = "
-              << (target_hits_mode ? "target_hits (二分自适应)" : "uniform_volume (体积比)")
+              << (target_hits_mode ? "target_hits (adaptive binary search)" : "uniform_volume")
               << "\n";
 
     try {
@@ -65,7 +65,7 @@ int main(int argc, char** argv) {
         size_t written = sul::util::generate_query_files(
             dataset_path, output_dir, n_queries, seed, /*scale=*/65536,
             target_hits_mode);
-        std::cout << "  写入 " << written << " 个查询文件 → " << output_dir << "/\n";
+        std::cout << "  Wrote " << written << " query files to " << output_dir << "/\n";
     } catch (const std::exception& e) {
         std::cerr << "[error] " << e.what() << "\n";
         return 2;

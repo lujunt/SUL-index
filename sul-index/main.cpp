@@ -194,7 +194,7 @@ int main(int argc, char** argv) {
     size_t rq_returned_sum = 0;
     size_t rq_gt_sum = 0;
     size_t rq_tp_sum = 0;
-    // 顺序累计：墙钟总耗时；并行模拟累计：(墙钟 - ART总耗时 + ART最大耗时)
+    // Sequential total uses wall time; parallel simulation replaces total ART time with its maximum.
     double rq_wall_us_sum = 0.0;
     double rq_parallel_us_sum = 0.0;
     int64_t rq_art_count_sum = 0;
@@ -224,7 +224,7 @@ int main(int argc, char** argv) {
         auto idx_res = index.range_query(lo, hi, &stats);
         auto rq_one_t1 = std::chrono::steady_clock::now();
         double wall_us = std::chrono::duration<double, std::micro>(rq_one_t1 - rq_one_t0).count();
-        // 并行模拟：把ART顺序累加耗时替换为ART最大单次耗时
+        // Model parallel ART searches by replacing their sum with the longest operation.
         double parallel_us = wall_us - stats.art_total_us + stats.art_max_us;
 
         auto gt_res = scanner.range_query(lo, hi, 2);
@@ -266,18 +266,15 @@ int main(int argc, char** argv) {
               << (static_cast<double>(rq_art_count_sum) / rq_total) << "\n";
     std::cout << "[rq] avg latency (sequential) = "
               << (rq_wall_us_sum / rq_total) << " us\n";
-    std::cout << "[rq] avg latency (ART并行模拟) = "
+    std::cout << "[rq] avg latency (parallel ART simulation) = "
               << (rq_parallel_us_sum / rq_total) << " us\n";
 
-    // ============= 插入测试 =============
-    // 测试目标：覆盖三种插入场景
-    //   场景A：插入学习层（预测槽位为空）—— 用全新随机坐标
-    //   场景B：插入ART层（预测槽位已占）—— 用已有点坐标的副本
-    //   场景C：触发ART节点扩容（Node4→16 / 16→48 / 48→256）
-    //          —— 大量重复/相近坐标插入会让冲突叶子ART持续增长
+    // ============= Insertion test =============
+    // Cover learning-layer insertion into an empty predicted slot, ART fallback on a
+    // collision, and ART node growth (Node4 -> Node16 -> Node48 -> Node256).
     std::cout << "\n----- Insertion Test -----\n";
 
-    // 插入前快照
+    // Snapshot before insertion.
     size_t learn_before = index.learning_layer_filled();
     size_t art_pts_before = index.art_layer_points();
     size_t art_inner_before = index.art_total_inner_nodes();
@@ -285,7 +282,7 @@ int main(int argc, char** argv) {
     size_t exp16_before = index.art_total_expand_16_to_48();
     size_t exp48_before = index.art_total_expand_48_to_256();
 
-    // 准备插入数据：1500 个全新随机点 + 1500 个已有坐标副本
+    // Prepare 1,500 new random points and 1,500 copies of existing coordinates.
     const int32_t N_INS_NEW = 1500;
     const int32_t N_INS_DUP = 1500;
     std::vector<std::array<int32_t, 2>> ins_coords;
@@ -302,7 +299,7 @@ int main(int argc, char** argv) {
         ins_coords.push_back({q.dimensions[0], q.dimensions[1]});
     }
 
-    // 执行插入并按层级计数
+    // Insert and count destinations by layer.
     int32_t cnt_learn = 0, cnt_art = 0, cnt_fail = 0;
     auto ins_t0 = std::chrono::steady_clock::now();
     for (const auto& c : ins_coords) {
@@ -323,7 +320,7 @@ int main(int argc, char** argv) {
     std::cout << "[ins] avg insert latency = "
               << (ins_us_total / ins_coords.size()) << " us/point\n";
 
-    // 插入后快照对比
+    // Compare the post-insertion snapshot.
     std::cout << "[ins] learning_filled "  << learn_before
               << " -> " << index.learning_layer_filled()
               << "  (+ " << (index.learning_layer_filled() - learn_before) << ")\n";
@@ -339,7 +336,7 @@ int main(int argc, char** argv) {
               << ", N48->N256=" << (index.art_total_expand_48_to_256() - exp48_before)
               << "\n";
 
-    // 插入后查询：用相同坐标做点查询，统计命中率与平均查询延迟
+    // Query inserted coordinates and report hit rate and average latency.
     int32_t q_total = 0, q_hit = 0;
     auto pq2_t0 = std::chrono::steady_clock::now();
     for (const auto& c : ins_coords) {

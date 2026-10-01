@@ -14,7 +14,7 @@ add_compile_options(-Wall -Wextra -Wno-unused-parameter)
 include_directories(${CMAKE_SOURCE_DIR}/include)
 
 # ============================================================================
-# 第一部分：明文索引（无外部依赖）
+# Part 1: plaintext index (no external dependencies)
 # ============================================================================
 set(SUL_SOURCES
     src/z_order.cpp
@@ -30,18 +30,18 @@ add_library(sul_index STATIC ${SUL_SOURCES})
 add_executable(sul_demo main.cpp)
 target_link_libraries(sul_demo PRIVATE sul_index)
 
-# 查询窗口生成器：从数据集 CSV 生成 5 个不同比例的查询文件
+# Query-window generator: create five selectivity files from a dataset CSV.
 add_executable(sul_query_gen main_query_gen.cpp)
 target_link_libraries(sul_query_gen PRIVATE sul_index)
 
-# 数据集划分工具：把 full csv 切成 train_csv + insert_csv（90/10 默认），
-# 支持基于 Z-order 桶的分层抽样（依赖 sul_index 的 ZOrderEncoder）
+# Dataset splitter: divide a full CSV into training and insertion sets (90/10 by default).
+# Supports stratified sampling over Z-order buckets through ZOrderEncoder.
 add_executable(sul_split main_split.cpp)
 target_link_libraries(sul_split PRIVATE sul_index)
 
 # ============================================================================
-# 第二部分：密文索引（依赖 ophelib + NTL + GMP）
-# 开关：默认开启；未安装依赖时用 -DBUILD_CIPHER=OFF 跳过
+# Part 2: encrypted index (requires ophelib, NTL, and GMP).
+# Enabled by default; use -DBUILD_CIPHER=OFF when these dependencies are unavailable.
 # ============================================================================
 option(BUILD_CIPHER "Build SUL-cipher-index (requires ophelib, NTL, GMP)" ON)
 
@@ -76,19 +76,19 @@ if(BUILD_CIPHER)
     add_executable(sul_cipher_demo main_cipher.cpp)
     target_link_libraries(sul_cipher_demo PRIVATE sul_cipher_index)
 
-    # 明文 vs 密文对比 demo（同一查询、双索引、逐项比对）
+    # Plaintext-versus-encrypted comparison using identical queries.
     add_executable(sul_compare_demo main_compare.cpp)
     target_link_libraries(sul_compare_demo PRIVATE sul_cipher_index)
 
-    # 序列化 / 反序列化 demo：build → save → load → query 比对
+    # Serialization demo: build, save, load, and compare query results.
     add_executable(sul_serde_demo main_serde_demo.cpp)
     target_link_libraries(sul_serde_demo PRIVATE sul_cipher_index)
 
-    # 场景实验 demo：按读/写比执行 2000 操作
+    # Workload demo: execute 2,000 operations at a selected read/write ratio.
     add_executable(sul_workload main_workload.cpp)
     target_link_libraries(sul_workload PRIVATE sul_cipher_index)
 
-    # 更新对比 demo：按 ul% 批量插入并对比更新后查询
+    # Update demo: insert a batch selected by ul% and compare post-update queries.
     add_executable(sul_update main_update.cpp)
     target_link_libraries(sul_update PRIVATE sul_cipher_index)
 

@@ -7,11 +7,11 @@
 
 namespace sul {
 
-// ART（自适应基数树）：逐字节遍历key，深度=key_len（即2×dim_count）
-// 节点扩容链：Node4 → Node16 → Node48 → Node256
+// Adaptive Radix Tree: traverse keys byte by byte to depth key_len (2 * dim_count).
+// Node growth sequence: Node4 -> Node16 -> Node48 -> Node256.
 class ARTTree {
 public:
-    // key_len：ART树的层数，等于实际key字节数（BITS_PER_DIM×dim_count/8）
+    // key_len is the ART depth and the actual key size in bytes.
     explicit ARTTree(int32_t key_len);
     ~ARTTree();
 
@@ -20,10 +20,10 @@ public:
 
     void insert(DataPoint* dp);
 
-    // 精确查找：按key_bytes逐层匹配，返回对应叶节点的数据点
+    // Exact lookup: match key_bytes at every level and return the leaf data point.
     DataPoint* search(const uint8_t* key_bytes) const;
 
-    // 范围查找：收集key_bytes在[low, high]（字典序）区间内的所有数据点
+    // Range lookup: collect points whose key_bytes are in lexicographic [low, high].
     std::vector<DataPoint*> range_search(const uint8_t* low,
                                          const uint8_t* high) const;
 
@@ -34,7 +34,7 @@ public:
     size_t leaf_count() const { return leaf_count_; }
     void*  root()       const { return root_; }
 
-    // 扩容事件计数器：用于观察插入时ART节点的扩容情况
+    // Counts ART node-growth events during insertion.
     size_t expand_4_to_16()   const { return expand_4_to_16_; }
     size_t expand_16_to_48()  const { return expand_16_to_48_; }
     size_t expand_48_to_256() const { return expand_48_to_256_; }
@@ -43,7 +43,7 @@ private:
     void*   root_;
     size_t  inner_count_;
     size_t  leaf_count_;
-    int32_t key_len_; // ART树层数（字节数）= 2×dim_count
+    int32_t key_len_; // ART depth in bytes = 2 * dim_count.
 
     size_t expand_4_to_16_   = 0;
     size_t expand_16_to_48_  = 0;

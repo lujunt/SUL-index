@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""校验新重训练记录，生成两图一表和独立 SpreadsheetML 工作簿。"""
+"""Validate retraining records and generate two plots, one table, and a SpreadsheetML workbook."""
 import argparse
 import csv
 import math

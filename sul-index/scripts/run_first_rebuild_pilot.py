@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""串行运行四个数据集的原分布/热点 beta=1 首次重构预实验。"""
+"""Run serial beta=1 first-rebuild pilots for baseline and hotspot streams on four datasets."""
 import argparse
 import csv
 import hashlib

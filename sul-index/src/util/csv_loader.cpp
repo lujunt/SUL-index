@@ -43,8 +43,8 @@ bool is_skip(const std::string& line) {
 
 } // namespace
 
-// 两遍扫描：先求每维 min/max，再按列 min-max 归一化到 [0, scale-1] 整数空间。
-// 充分利用 BITS_PER_DIM 精度，避免亚整数级浮点数据被整数化坍缩到同一整数桶。
+// Two passes: find per-dimension minima/maxima, then normalize each column to integer
+// [0, scale-1], preserving BITS_PER_DIM precision for small floating-point differences.
 static CsvLoadResult load_csv_impl(const std::string& path, int32_t scale,
                                    const CsvNormalization* fixed) {
     if (scale < 2) throw std::runtime_error("load_csv: scale must be >= 2");
@@ -53,7 +53,7 @@ static CsvLoadResult load_csv_impl(const std::string& path, int32_t scale,
         throw std::runtime_error("load_csv: cannot open " + path);
     }
 
-    // pass 1：读全部浮点行，统计 min/max
+    // Pass 1: read floating-point rows and collect minima/maxima.
     std::vector<std::vector<double>> raw;
     std::vector<int32_t>             ids;
     raw.reserve(1024);
@@ -127,7 +127,7 @@ static CsvLoadResult load_csv_impl(const std::string& path, int32_t scale,
                 throw std::runtime_error("load_csv: invalid normalization bounds");
     }
 
-    // pass 2：按列 min-max 归一化到 [0, scale_max]
+    // Pass 2: normalize each column to [0, scale_max].
     CsvLoadResult result;
     result.dim_count = dim_count;
     result.normalization = {min_v, max_v, scale};

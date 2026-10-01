@@ -12,7 +12,7 @@
 using namespace ophelib;
 using namespace std;
 
-// 随机函数 F,随机生成0或1
+// Random function F producing zero or one.
 int F() {
     static std::random_device rd;
     static std::mt19937 gen(rd());
@@ -20,7 +20,7 @@ int F() {
     return dis(gen);
 }
 
-// 线程DAP的函数，接收 Z 作为参数，返回 R
+// DAP function accepting Z and returning R.
 void SICDAPFunction(Ciphertext& R, Ciphertext Z, PaillierFast& paillier) {//z->string
     Integer H, res(1), tmp(0), denc_Z;
     Ciphertext enc0, enc1;
@@ -40,7 +40,7 @@ void SICDAPFunction(Ciphertext& R, Ciphertext Z, PaillierFast& paillier) {//z->s
     // else R = enc0;
 }
 
-//线程DSP的函数
+// DSP function.
 void SICDSPFunction(Ciphertext X, Ciphertext Y, Ciphertext& final_result, PaillierFast& paillier) {
     // X *= 2;
     // Y *= 2;
@@ -65,7 +65,7 @@ void SICDSPFunction(Ciphertext X, Ciphertext Y, Ciphertext& final_result, Pailli
     {
         Z = Y - X;
     }
-    // 去线程版：原 lambda + t2 spawn 立即 join，等价于同步调用 SICDAPFunction
+    // The original thread was joined immediately, so call SICDAPFunction synchronously.
     SICDAPFunction(R, Z, paillier);
     if (f == 1) {
         final_result = R;
@@ -76,8 +76,7 @@ void SICDSPFunction(Ciphertext X, Ciphertext Y, Ciphertext& final_result, Pailli
 
 
 Integer SICrun(Ciphertext X, Ciphertext Y, PaillierFast& paillier) {
-    // 去线程版：原实现 spawn t1 后立即 join，等价于同步调用 SICDSPFunction
-    // thread spawn/join 在百微秒级 SIC 中占可观比例
+    // Likewise, call SICDSPFunction synchronously; spawn/join overhead is material for SIC.
     Ciphertext final_result;
     SICDSPFunction(X, Y, final_result, paillier);
     return paillier.decrypt(final_result);

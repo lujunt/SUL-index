@@ -1,12 +1,12 @@
-// SUL-cipher-index 序列化往返 demo
-// 用法：./sul_serde_demo <dataset_csv> <query_csv> [paillier_key=1024] [out_dir=indexes]
+// SUL-cipher-index serialization round-trip demo.
+// Usage: ./sul_serde_demo <dataset_csv> <query_csv> [paillier_key=1024] [out_dir=indexes]
 //
-// 流程：
-//   1) 读 dataset 建密文索引（含插入计时统计）
+// Workflow:
+//   1) Build an encrypted index from the dataset and measure insertions.
 //   2) idx.save_to_file(<out_dir>/<dataset_stem>.scidx)
-//   3) SULCipherIndex::load_from_file 重载新实例
-//   4) 在 loaded 实例上跑 query 文件全部范围查询
-//   5) 与原实例结果比对 orig_id 集合，输出 PASS / FAIL
+//   3) Reload a new instance with SULCipherIndex::load_from_file.
+//   4) Run every query-file range query against the loaded instance.
+//   5) Compare orig_id sets with the original instance and report PASS or FAIL.
 
 #include "sul/cipher/sul_cipher_index.h"
 #include "sul/util/csv_loader.h"
@@ -40,7 +40,7 @@ int main(int argc, char** argv) {
     const int32_t     KSZ          = (argc > 3) ? std::atoi(argv[3]) : 1024;
     const std::string out_dir      = (argc > 4) ? argv[4] : "indexes";
 
-    std::cout << "=== SUL-cipher-index 序列化往返 demo ===\n";
+    std::cout << "=== SUL-cipher-index serialization round-trip demo ===\n";
     std::cout << "  dataset = " << dataset_path << "\n";
     std::cout << "  query   = " << query_path   << "\n";
     std::cout << "  paillier_key = " << KSZ
@@ -59,18 +59,18 @@ int main(int argc, char** argv) {
     const int32_t DIM = ds.dim_count;
     if (DIM != qf.dim_count) {
         std::cerr << "[error] dataset dim=" << DIM
-                  << " query dim=" << qf.dim_count << " 不匹配\n";
+                  << " query dim=" << qf.dim_count << " do not match\n";
         return 3;
     }
     std::cout << "  dataset: N=" << N << "  dim=" << DIM << "\n";
-    std::cout << "  query:   " << qf.queries.size() << " 条范围查询\n";
+    std::cout << "  query:   " << qf.queries.size() << " range queries\n";
 
     IndexConfig cfg;
     cfg.dim_count   = DIM;
     cfg.error_bound = 4;
 
-    // ---- Phase 1: 构建 ----
-    std::cout << "\n=== Phase 1: 构建原始密文索引 ===\n";
+    // ---- Phase 1: Build ----
+    std::cout << "\n=== Phase 1: Build the original encrypted index ===\n";
     CryptoContext crypto(KSZ);
     SULCipherIndex idx(cfg, crypto);
     auto t0 = std::chrono::steady_clock::now();
@@ -82,8 +82,8 @@ int main(int argc, char** argv) {
               << "  learning=" << idx.learning_layer_filled()
               << "  art=" << idx.art_layer_points() << "\n";
 
-    // ---- Phase 2: 插入计时（插入后再 serde，让 inserted 池也纳入文件） ----
-    std::cout << "\n=== Phase 2: 插入计时（含插入后序列化覆盖 inserted 池） ===\n";
+    // ---- Phase 2: Time insertions before serializing the inserted pool. ----
+    std::cout << "\n=== Phase 2: Time insertions and include them in serialization ===\n";
     const int32_t N_INS = 20;
     std::mt19937 ins_rng(20260520);
     std::uniform_int_distribution<int32_t> ins_coord(0, 65535);
@@ -103,19 +103,19 @@ int main(int argc, char** argv) {
         else if (r == InsertResult::ARTLayer)      ++cnt_art;
         else                                       ++cnt_fail;
     }
-    std::cout << "  共 " << N_INS << " 次插入 (Learning=" << cnt_learn
+    std::cout << "  " << N_INS << " insertions (Learning=" << cnt_learn
               << "  ART=" << cnt_art << "  Failed=" << cnt_fail << ")\n";
-    std::cout << "  插入总耗时 = " << ins_total_us / 1000.0 << " ms\n";
-    std::cout << "  平均单插入 = "
+    std::cout << "  Total insertion time = " << ins_total_us / 1000.0 << " ms\n";
+    std::cout << "  Average insertion time = "
               << (N_INS ? ins_total_us / static_cast<double>(N_INS) : 0.0) << " us\n";
     std::cout << "  min/max   = " << ins_min_us << " us / " << ins_max_us << " us\n";
 
     // ---- Phase 3: save_to_file ----
-    std::cout << "\n=== Phase 3: 序列化到 " << out_dir << "/ ===\n";
+    std::cout << "\n=== Phase 3: Serialize to " << out_dir << "/ ===\n";
     fs::create_directories(out_dir);
-    // 命名规则：含 dataset stem + K/err/dim 参数，避免跨数据集同参数缓存冲突
+    // Include the dataset stem and K/err/dim to prevent cache-name collisions.
     //   index_<stem>_K{K}_err{err}_dim{d}.scidx
-    // 注：N 已隐含在 <stem> 内（如 uniform_20000 / skewed_20000），无需再加 _N 后缀
+    // N is already part of <stem>, so an additional _N suffix is unnecessary.
     const std::string out_path = out_dir + "/index_"
                                + util::dataset_stem(dataset_path)
                                + "_K"   + std::to_string(KSZ)
@@ -130,13 +130,13 @@ int main(int argc, char** argv) {
         return 4;
     }
     auto st1 = std::chrono::steady_clock::now();
-    std::cout << "  写出 = " << out_path << "\n";
-    std::cout << "  耗时 = "
+    std::cout << "  Output = " << out_path << "\n";
+    std::cout << "  Time = "
               << std::chrono::duration<double, std::milli>(st1 - st0).count() << " ms\n";
-    std::cout << "  文件大小 = " << fs::file_size(out_path) << " bytes\n";
+    std::cout << "  File size = " << fs::file_size(out_path) << " bytes\n";
 
     // ---- Phase 4: load_from_file ----
-    std::cout << "\n=== Phase 4: 反序列化 ===\n";
+    std::cout << "\n=== Phase 4: Deserialize ===\n";
     std::unique_ptr<CryptoContext> loaded_crypto;
     std::unique_ptr<SULCipherIndex> loaded_idx;
     auto lt0 = std::chrono::steady_clock::now();
@@ -149,7 +149,7 @@ int main(int argc, char** argv) {
         return 5;
     }
     auto lt1 = std::chrono::steady_clock::now();
-    std::cout << "  耗时 = "
+    std::cout << "  Time = "
               << std::chrono::duration<double, std::milli>(lt1 - lt0).count() << " ms\n";
     std::cout << "  loaded leaf=" << loaded_idx->leaf_count()
               << "  inner_layers=" << loaded_idx->inner_layer_count()
@@ -158,10 +158,10 @@ int main(int argc, char** argv) {
     bool struct_ok = (idx.leaf_count()        == loaded_idx->leaf_count()
                    && idx.inner_layer_count() == loaded_idx->inner_layer_count()
                    && idx.total_points()      == loaded_idx->total_points());
-    std::cout << "  结构规模一致? " << (struct_ok ? "YES" : "NO") << "\n";
+    std::cout << "  Structure size matches? " << (struct_ok ? "YES" : "NO") << "\n";
 
-    // ---- Phase 5: loaded 实例跑 query 文件，与原实例对比 ----
-    std::cout << "\n=== Phase 5: loaded 索引执行查询并比对 ===\n";
+    // ---- Phase 5: Compare queries on loaded and original instances. ----
+    std::cout << "\n=== Phase 5: Query and compare the loaded index ===\n";
     int matched = 0, mismatched = 0;
     size_t total_orig = 0, total_loaded = 0;
     double orig_ms = 0.0, loaded_ms = 0.0;
@@ -192,27 +192,27 @@ int main(int argc, char** argv) {
             for (int x : ids_l) if (!ids_o.count(x)) ++only_l;
             std::cout << "  q" << qi << " MISMATCH: orig=" << o_res.size()
                       << " loaded=" << l_res.size()
-                      << " orig独有=" << only_o << " loaded独有=" << only_l << "\n";
+                      << " original-only=" << only_o << " loaded-only=" << only_l << "\n";
         }
     }
 
     const size_t NQ = qf.queries.size();
-    std::cout << "  范围查询一致: " << matched << "/" << NQ
+    std::cout << "  Matching range queries: " << matched << "/" << NQ
               << (mismatched ? "  [MISMATCH=" + std::to_string(mismatched) + "]" : "")
               << "\n";
-    std::cout << "  平均返回点数: orig=" << (NQ ? total_orig / NQ : 0)
+    std::cout << "  Average result size: original=" << (NQ ? total_orig / NQ : 0)
               << "  loaded=" << (NQ ? total_loaded / NQ : 0) << "\n";
-    std::cout << "  总耗时: orig=" << orig_ms << " ms  loaded=" << loaded_ms << " ms\n";
-    std::cout << "  平均单查询: orig="
+    std::cout << "  Total time: original=" << orig_ms << " ms  loaded=" << loaded_ms << " ms\n";
+    std::cout << "  Average per query: original="
               << (NQ ? orig_ms / static_cast<double>(NQ) : 0.0) << " ms/q"
               << "  loaded="
               << (NQ ? loaded_ms / static_cast<double>(NQ) : 0.0) << " ms/q\n";
 
-    std::cout << "\n=== 总结 ===\n";
+    std::cout << "\n=== Summary ===\n";
     bool all_pass = struct_ok && (mismatched == 0);
-    std::cout << "  结论: "
-              << (all_pass ? "PASS 序列化后查询与原索引一致"
-                           : "FAIL 序列化往返存在差异")
+    std::cout << "  Result: "
+              << (all_pass ? "PASS: deserialized queries match the original index"
+                           : "FAIL: serialization round-trip changed results")
               << "\n";
     return all_pass ? 0 : 1;
 }

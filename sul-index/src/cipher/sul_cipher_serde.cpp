@@ -1,16 +1,16 @@
-// SUL-cipher-index 序列化 / 反序列化
+// SUL-cipher-index serialization and deserialization.
 //
-// 文件格式（二进制，小端）：
-//   Magic        : "SCIDX002"  (8B)   v2: Integer 改为 raw big-endian 字节
-//   Version      : u32 = 6（读取兼容 v5；v6 增加 ART 同键记录列表）
-//   KeySize      : u32  Paillier 密钥位数
-//   SCALE        : i32  浮点缩放常量（应等于 CryptoContext::SCALE）
+// File format (binary, little-endian):
+//   Magic        : "SCIDX002" (8B); v2 stores Integer as raw big-endian bytes.
+//   Version      : u32 = 6; reads v5, and v6 adds ART duplicate-key record lists.
+//   KeySize      : u32 Paillier key size.
+//   SCALE        : i32 floating-point scale, equal to CryptoContext::SCALE.
 //   IndexConfig  : error_bound(i32) max_layers(i32) dim_count(i32)
 //
 //   KeyPair      : key_size_bits(u64) a_bits(u64)
 //                  Integer pub.n / pub.g / priv.p / priv.q / priv.a
-//   每个 Integer 以 u32 len + 'len' 字节 big-endian 无符号大数保存
-//   （len == 0 表示数值 0；GMP 不写前导零，所以 len 通常略小于 ceil(2K/8)）
+//   Each Integer is u32 len followed by len bytes of an unsigned big-endian value.
+//   len == 0 represents zero; GMP omits leading zeros.
 //
 //   Plain Skeleton:
 //     n_layers(u32)
@@ -21,14 +21,14 @@
 //                 slot_count(i32) filled(i32) seg_start(i32) seg_end(i32)
 //                 occupied(u8 × slot_count)
 //
-//   Encrypted DataPoint 池（pool_id 顺序：enc_points_ 拼接 enc_inserted_points_）：
+//   Encrypted DataPoint pool (enc_points_ followed by enc_inserted_points_):
 //     n_enc_points(u32)
 //       per point: dim_count(i32) orig_id(i32)
-//                  dim_count 个 Ciphertext
-//                  1 个 Ciphertext (z_value)
-//                  key_len 个 Ciphertext (key_bytes)
+//                  dim_count Ciphertexts
+//                  1 Ciphertext (z_value)
+//                  key_len Ciphertexts (key_bytes)
 //
-//   Encrypted GPL Inner Layers（与 plain 一一对应）:
+//   Encrypted GPL inner layers corresponding to plaintext layers:
 //     n_layers(u32)
 //       per layer: n_nodes(u32)
 //         per node: key(ct) slope(ct) intercept(ct) child_count(i32) child_ids[child_count](ct)
@@ -36,7 +36,7 @@
 //   Encrypted GPL Leaf Nodes:
 //     n_leaves(u32)
 //       per leaf: key(ct) slope(ct) intercept(ct) art_tree_idx(i32)
-//                 data_slot_pool_ids: i32 × slot_count （-1 表示空槽）
+//                 data_slot_pool_ids: i32 * slot_count (-1 means empty)
 //
 //   Encrypted ART Trees:
 //     n_arts(u32)
@@ -44,10 +44,10 @@
 //         if has_root: pre-order walk
 //           type(u8)
 //           AT_LEAF: pool_id(i32), duplicate_count(u64), duplicate_pool_ids(i32[])
-//           AT_NODE*: 4/16/48/256 个槽
-//             present(u8); 若 present: plain_key(u8) key(ct) child_id(ct) 然后递归子节点
+//           AT_NODE*: 4/16/48/256 slots
+//             present(u8); if present: plain_key(u8), key(ct), child_id(ct), then child recursively
 //
-//   每个 Ciphertext 以 u32 len + len 字节 big-endian raw 大数保存（v2）
+//   Each Ciphertext is stored as u32 len plus len raw big-endian bytes (v2).
 
 #include "sul/cipher/sul_cipher_index.h"
 #include "sul/cipher/cipher_types.h"
@@ -69,26 +69,25 @@ namespace sul::cipher {
 namespace {
 
 // ============================================================================
-// 二进制 IO 助手
+// Binary I/O helpers.
 // ============================================================================
 template <typename T>
 void write_pod(std::ostream& os, const T& v) {
-    static_assert(std::is_trivially_copyable_v<T>, "write_pod 仅支持 POD");
+    static_assert(std::is_trivially_copyable_v<T>, "write_pod supports only POD types");
     os.write(reinterpret_cast<const char*>(&v), sizeof(T));
 }
 
 template <typename T>
 T read_pod(std::istream& is) {
-    static_assert(std::is_trivially_copyable_v<T>, "read_pod 仅支持 POD");
+    static_assert(std::is_trivially_copyable_v<T>, "read_pod supports only POD types");
     T v{};
     is.read(reinterpret_cast<char*>(&v), sizeof(T));
-    if (!is) throw std::runtime_error("scidx: 读取 POD 失败");
+    if (!is) throw std::runtime_error("scidx: failed to read POD value");
     return v;
 }
 
-// Integer 落盘格式：u32 len + len 字节 big-endian 原始无符号大数
-// （len == 0 表示数值 0；GMP 不写前导零，所以 len 通常 < ceil(2K/8)）
-// 仅用于 Paillier 密文（恒非负，∈[0, n²)）与公私钥分量，故无符号位需求。
+// Integer format: u32 len followed by len raw unsigned big-endian bytes. len == 0 is zero.
+// This is used only for nonnegative Paillier ciphertexts and key components.
 void write_integer(std::ostream& os, const ophelib::Integer& v) {
     const size_t bits = mpz_sizeinbase(v.get_mpz_t(), 2);
     const size_t cap  = (bits + 7) / 8;
@@ -102,7 +101,7 @@ void write_integer(std::ostream& os, const ophelib::Integer& v) {
                    0 /*nails: 0*/,
                    v.get_mpz_t());
     }
-    // value=0 时 mpz_export 返回 count=0 且不写字节
+    // For zero, mpz_export returns count=0 and writes no bytes.
     uint32_t n = static_cast<uint32_t>(count);
     write_pod(os, n);
     if (n > 0) os.write(reinterpret_cast<const char*>(buf.data()), n);
@@ -113,7 +112,7 @@ ophelib::Integer read_integer(std::istream& is) {
     if (n == 0) return ophelib::Integer(0);
     std::vector<uint8_t> buf(n);
     is.read(reinterpret_cast<char*>(buf.data()), n);
-    if (!is) throw std::runtime_error("scidx: 读取 Integer 原始字节失败");
+    if (!is) throw std::runtime_error("scidx: failed to read raw Integer bytes");
     ophelib::Integer v;
     mpz_import(v.get_mpz_t(), n,
                1 /*order: MSB first*/,
@@ -135,7 +134,7 @@ ophelib::Ciphertext read_ct(std::istream& is,
     return ophelib::Ciphertext(x, n2_shared, fast_mod);
 }
 
-// ART 节点辅助（与 enc_art_tree.cpp 等价）
+// ART node helpers equivalent to enc_art_tree.cpp.
 ARTNodeType type_of(void* node) {
     return reinterpret_cast<EncARTNodeHeader*>(node)->type;
 }
@@ -144,7 +143,7 @@ void n48_set(EncARTNode48* n, int32_t i)        { n->bitmap |= (1ULL << i); }
 bool n256_has(const EncARTNode256* n, int32_t i){ return ((n->bitmap[i>>6] >> (i&63)) & 1ULL) != 0ULL; }
 void n256_set(EncARTNode256* n, int32_t i)      { n->bitmap[i>>6] |= (1ULL << (i&63)); }
 
-// 序列化一棵 ART 子树（前序遍历）
+// Serialize an ART subtree in preorder.
 void save_art_subtree(std::ostream& os, void* node,
                       const std::unordered_map<EncDataPoint*, int32_t>& pool_idx) {
     ARTNodeType t = type_of(node);
@@ -195,7 +194,7 @@ void save_art_subtree(std::ostream& os, void* node,
     }
 }
 
-// 反序列化节点构造
+// Construct nodes during deserialization.
 EncARTNode4* new_n4(const ophelib::Ciphertext& enc_zero) {
     auto* n = new EncARTNode4();
     n->header.type = AT_NODE4;
@@ -249,7 +248,7 @@ struct ArtLoadContext {
 
 void* load_art_subtree(std::istream& is, ArtLoadContext& ctx);
 
-// 公共槽位 IO，bitmap 写入由调用方根据节点族手动完成
+// Common slot I/O; callers write bitmaps according to node type.
 template <typename N>
 void load_slot_payload(std::istream& is, N* n, int32_t i, ArtLoadContext& ctx) {
     n->plain_keys[i] = read_pod<uint8_t>(is);
@@ -333,14 +332,13 @@ void* load_art_subtree(std::istream& is, ArtLoadContext& ctx) {
     return n;
 }
 
-// v1 (SCIDX001) 使用 hex 字符串保存 Integer；
-// v2 (SCIDX002) 改为 raw big-endian 字节（约腰斩文件体积）。
-// v3 (SCIDX003) 每叶子新增 plaintext coord bbox（2*dim_count*4 字节）。
-// v4 (SCIDX004) bbox 改为 Paillier 密文；用 SIC 在密文域做 OUTSIDE 判定。
-// v5 (SCIDX005) z_value 升级到 128 位：plain GPL 节点 key 由 8 字节 → 16 字节
-//               （hi64+lo64）。修复 d≥5 时 z 截断导致的候选爆炸。不兼容 v4。
+// v1 stores Integer as hexadecimal strings.
+// v2 uses raw big-endian bytes, roughly halving file size.
+// v3 adds a plaintext coordinate bbox to each leaf.
+// v4 encrypts bboxes and uses SIC for OUTSIDE tests.
+// v5 expands Z-order values and plaintext GPL keys to 128 bits, fixing truncation at d >= 5.
 constexpr char kMagic[8] = {'S','C','I','D','X','0','0','5'};
-constexpr uint32_t kVersion = 6; // v6: ART 重复键记录列表；仍可读取 v5
+constexpr uint32_t kVersion = 6; // v6 adds ART duplicate-key lists and can still read v5.
 
 } // namespace
 
@@ -349,7 +347,7 @@ constexpr uint32_t kVersion = 6; // v6: ART 重复键记录列表；仍可读取
 // ============================================================================
 void SULCipherIndex::save_to_file(const std::string& path) const {
     std::ofstream os(path, std::ios::binary);
-    if (!os) throw std::runtime_error("scidx: 无法创建文件 " + path);
+    if (!os) throw std::runtime_error("scidx: cannot create file " + path);
 
     os.write(kMagic, sizeof(kMagic));
     write_pod<uint32_t>(os, kVersion);
@@ -378,7 +376,7 @@ void SULCipherIndex::save_to_file(const std::string& path) const {
     for (const auto& layer : plain_inner) {
         write_pod<uint32_t>(os, static_cast<uint32_t>(layer.size()));
         for (const auto& node : layer) {
-            // v5: 128 位 key = hi64 + lo64
+            // v5: 128-bit key = hi64 + lo64.
             write_pod<uint64_t>(os, static_cast<uint64_t>(node.key >> 64));
             write_pod<uint64_t>(os, static_cast<uint64_t>(node.key));
             write_pod<double>(os, node.slope);
@@ -390,7 +388,7 @@ void SULCipherIndex::save_to_file(const std::string& path) const {
     const auto& plain_leaves = plain_.leaf_nodes();
     write_pod<uint32_t>(os, static_cast<uint32_t>(plain_leaves.size()));
     for (const auto& leaf : plain_leaves) {
-        // v5: 128 位 key
+        // v5: 128-bit key.
         write_pod<uint64_t>(os, static_cast<uint64_t>(leaf.key >> 64));
         write_pod<uint64_t>(os, static_cast<uint64_t>(leaf.key));
         write_pod<double>(os, leaf.slope);
@@ -443,7 +441,7 @@ void SULCipherIndex::save_to_file(const std::string& path) const {
         write_ct(os, leaf.slope);
         write_ct(os, leaf.intercept);
         write_pod<int32_t>(os, leaf.art_tree_idx);
-        // v4: ciphertext coord bbox (含 GPL slots + ART 点)
+        // v4: encrypted coordinate bbox over GPL slots and ART points.
         for (int32_t d = 0; d < config_.dim_count; ++d)
             write_ct(os, leaf.coord_lo_enc[d]);
         for (int32_t d = 0; d < config_.dim_count; ++d)
@@ -468,7 +466,7 @@ void SULCipherIndex::save_to_file(const std::string& path) const {
     }
 
     os.flush();
-    if (!os) throw std::runtime_error("scidx: 写入失败 " + path);
+    if (!os) throw std::runtime_error("scidx: write failed for " + path);
 }
 
 // ============================================================================
@@ -477,18 +475,18 @@ void SULCipherIndex::save_to_file(const std::string& path) const {
 std::pair<std::unique_ptr<CryptoContext>, std::unique_ptr<SULCipherIndex>>
 SULCipherIndex::load_from_file(const std::string& path) {
     std::ifstream is(path, std::ios::binary);
-    if (!is) throw std::runtime_error("scidx: 无法打开文件 " + path);
+    if (!is) throw std::runtime_error("scidx: cannot open file " + path);
 
     char magic[8] = {};
     is.read(magic, sizeof(magic));
     if (std::memcmp(magic, kMagic, sizeof(magic)) != 0)
-        throw std::runtime_error("scidx: magic 不匹配 " + path);
+        throw std::runtime_error("scidx: magic mismatch in " + path);
     uint32_t version = read_pod<uint32_t>(is);
-    if (version != 5 && version != kVersion) throw std::runtime_error("scidx: 不支持的版本");
+    if (version != 5 && version != kVersion) throw std::runtime_error("scidx: unsupported version");
     uint32_t key_size = read_pod<uint32_t>(is);
     int32_t  scale_on_disk = read_pod<int32_t>(is);
     if (scale_on_disk != CryptoContext::SCALE)
-        throw std::runtime_error("scidx: SCALE 不匹配");
+        throw std::runtime_error("scidx: SCALE mismatch");
 
     IndexConfig cfg;
     cfg.error_bound = read_pod<int32_t>(is);
@@ -525,7 +523,7 @@ SULCipherIndex::load_from_file(const std::string& path) {
         inner_layers[L].resize(n_nodes);
         for (uint32_t i = 0; i < n_nodes; ++i) {
             GPLInnerNode& node = inner_layers[L][i];
-            // v5: 128 位 key = hi64 + lo64
+            // v5: 128-bit key = hi64 + lo64.
             uint64_t hi = read_pod<uint64_t>(is);
             uint64_t lo = read_pod<uint64_t>(is);
             node.key         = (static_cast<__uint128_t>(hi) << 64) | lo;
@@ -539,7 +537,7 @@ SULCipherIndex::load_from_file(const std::string& path) {
     std::vector<GPLLeafNode> leaves(n_leaves);
     for (uint32_t i = 0; i < n_leaves; ++i) {
         GPLLeafNode& leaf = leaves[i];
-        // v5: 128 位 key
+        // v5: 128-bit key.
         uint64_t hi = read_pod<uint64_t>(is);
         uint64_t lo = read_pod<uint64_t>(is);
         leaf.key          = (static_cast<__uint128_t>(hi) << 64) | lo;

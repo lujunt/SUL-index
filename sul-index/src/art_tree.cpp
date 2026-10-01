@@ -53,7 +53,7 @@ ARTNodeType type_of(void* node) {
     return reinterpret_cast<ARTNodeHeader*>(node)->type;
 }
 
-// Node48的位图操作（48位用uint64_t存储）
+// Node48 bitmap operations use a uint64_t.
 bool n48_has(const ARTNode48* n, int32_t i) {
     return ((n->bitmap >> i) & 1ULL) != 0ULL;
 }
@@ -61,7 +61,7 @@ void n48_set(ARTNode48* n, int32_t i) {
     n->bitmap |= (1ULL << i);
 }
 
-// Node256的位图操作（256位用uint64_t[4]存储，每个元素管理64位）
+// Node256 bitmap operations use four uint64_t values.
 bool n256_has(const ARTNode256* n, int32_t i) {
     return ((n->bitmap[i >> 6] >> (i & 63)) & 1ULL) != 0ULL;
 }
@@ -161,7 +161,7 @@ void* ARTTree::insert_inner(void* node, const uint8_t* key_bytes,
     uint8_t byte_val = key_bytes[depth];
     ARTNodeType t = type_of(node);
 
-    // 到达最后一层（depth == key_len_-1）则挂叶节点，否则向下递归
+    // Attach a leaf at the final level; otherwise recurse downward.
     auto attach_or_recurse = [&](void*& child_slot) {
         if (depth == key_len_ - 1) {
             if (child_slot && type_of(child_slot) == AT_LEAF) {
@@ -194,7 +194,7 @@ void* ARTTree::insert_inner(void* node, const uint8_t* key_bytes,
             attach_or_recurse(n->children[empty]);
             return node;
         }
-        // Node4已满，扩容为Node16
+        // Grow a full Node4 into Node16.
         return insert_inner(expand_node4_to_node16(n), key_bytes, dp, depth);
     }
 
@@ -210,7 +210,7 @@ void* ARTTree::insert_inner(void* node, const uint8_t* key_bytes,
             attach_or_recurse(n->children[empty]);
             return node;
         }
-        // Node16已满，扩容为Node48
+        // Grow a full Node16 into Node48.
         return insert_inner(expand_node16_to_node48(n), key_bytes, dp, depth);
     }
 
@@ -226,11 +226,11 @@ void* ARTTree::insert_inner(void* node, const uint8_t* key_bytes,
             attach_or_recurse(n->children[empty]);
             return node;
         }
-        // Node48已满，扩容为Node256
+        // Grow a full Node48 into Node256.
         return insert_inner(expand_node48_to_node256(n), key_bytes, dp, depth);
     }
 
-    // AT_NODE256：最大节点，不再扩容
+    // AT_NODE256 is the largest node and cannot grow further.
     auto* n = reinterpret_cast<ARTNode256*>(node);
     int32_t idx = find_slot_node256(n, byte_val);
     if (idx >= 0) { attach_or_recurse(n->children[idx]); return node; }
@@ -300,7 +300,7 @@ void* ARTTree::expand_node48_to_node256(ARTNode48* n48) {
 
 DataPoint* ARTTree::search(const uint8_t* key_bytes) const {
     void* cur = root_;
-    // 逐层按当前字节匹配，遍历key_len_层
+    // Match the current byte at each of key_len_ levels.
     for (int32_t depth = 0; depth < key_len_ && cur; ++depth) {
         uint8_t byte_val = key_bytes[depth];
         ARTNodeType t = type_of(cur);
@@ -367,7 +367,7 @@ std::vector<DataPoint*> ARTTree::collect_all() const {
     return out;
 }
 
-// 范围收集：tight_low/tight_high表示当前层是否还在边界约束内
+// Range collection: tight_low and tight_high track whether the current level touches a boundary.
 void ARTTree::range_collect(void* node, int32_t depth,
                              const uint8_t* low, const uint8_t* high,
                              bool tight_low, bool tight_high,
@@ -381,7 +381,7 @@ void ARTTree::range_collect(void* node, int32_t depth,
         return;
     }
 
-    // 当前层的字节范围：若已不在边界约束内则全范围[0x00, 0xFF]
+    // Use the full byte range [0x00, 0xFF] once this level is no longer boundary-constrained.
     uint8_t lb = tight_low  ? low[depth]  : 0x00;
     uint8_t hb = tight_high ? high[depth] : 0xFF;
     if (lb > hb) return;

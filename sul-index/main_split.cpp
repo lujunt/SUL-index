@@ -1,22 +1,21 @@
-// 数据集划分工具：把 full csv 切成 train + insert
+// Dataset splitter: divide a full CSV into training and insertion sets.
 //
-// 用法:
+// Usage:
 //   ./sul_split <full_csv> [out_dir=datasets] [ratio=0.9] [seed=42] [strata=64]
 //
-// 抽样策略:
-//   strata >= 2 → Z-order 桶分层抽样：按 Z-curve 排序后切成 strata 个等量段，
-//                 每段独立按 ratio 随机抽样，保证不均匀数据集的局部密度也被
-//                 等比例划分到 train / insert（无放回）
-//   strata <= 1 → 退化为简单随机抽样（mt19937 shuffle + 取前 ratio*N）
+// Sampling:
+//   strata >= 2: sort by Z-order, split into equal segments, and sample each segment
+//                without replacement so local density is preserved.
+//   strata <= 1: simple random sampling with an mt19937 shuffle.
 //
-// 输出命名（自动派生，与 record 命名风格一致）:
+// Output names are derived automatically to match record naming:
 //   <out_dir>/<stem>_dim{d}_N{n_train}_train.csv
 //   <out_dir>/<stem>_dim{d}_N{n_insert}_insert.csv
 //
-//   stem 取数据集文件名前两个 `_` 段（与 sul_query_gen 一致）
-//   d 由首行逗号数自动检测（行格式：dim_1,...,dim_d,id → 共 d 个逗号）
+//   stem uses the first two underscore-delimited dataset-name components.
+//   d is detected from the first row's comma count.
 //
-// 注释行（# 开头）与空行被丢弃；CSV 格式与 sul::util::load_csv 完全兼容。
+// Comment and empty lines are discarded; output is compatible with sul::util::load_csv.
 
 #include "sul/z_order.h"
 
@@ -67,13 +66,13 @@ void write_lines(const std::string& path,
 }
 
 int detect_dim(const std::string& first_line) {
-    // 行格式: dim_1, dim_2, ..., dim_d, id → 共 d+1 个字段，d 个逗号
+    // Row format: dim_1, dim_2, ..., dim_d, id has d+1 fields and d commas.
     int commas = 0;
     for (char c : first_line) if (c == ',') ++commas;
     return commas;
 }
 
-// 解析前 dim 个浮点字段（第 dim+1 个为 id，忽略）
+// Parse the first dim floating-point fields; ignore the final ID field.
 void parse_coords(const std::string& line, int dim, std::vector<double>& out) {
     out.clear();
     out.reserve(static_cast<size_t>(dim));
@@ -81,7 +80,7 @@ void parse_coords(const std::string& line, int dim, std::vector<double>& out) {
     for (int i = 0; i < dim; ++i) {
         size_t next = line.find(',', pos);
         if (next == std::string::npos)
-            throw std::runtime_error("行字段数少于 dim+1：" + line);
+            throw std::runtime_error("row has fewer than dim+1 fields: " + line);
         out.push_back(std::stod(line.substr(pos, next - pos)));
         pos = next + 1;
     }
@@ -107,7 +106,7 @@ void ensure_dir(const std::string& dir) {
     ::mkdir(dir.c_str(), 0755);
 }
 
-// 简单随机抽样：等价于无放回 SRS，前 n_train 个归 train、其余归 insert
+// Simple random sampling without replacement: first n_train rows go to training.
 void simple_random_partition(size_t N, double ratio, uint32_t seed,
                              std::vector<size_t>& train_idx,
                              std::vector<size_t>& insert_idx) {
@@ -121,12 +120,11 @@ void simple_random_partition(size_t N, double ratio, uint32_t seed,
     insert_idx.assign(idx.begin() + n_train,    idx.end());
 }
 
-// Z-order 桶分层抽样：
-//   1) 用 ZOrderEncoder 计算每点 key_len 字节大端序 Z-key
-//   2) 按 Z-key 字典序排序索引
-//   3) 切成 S 个连续等量段（残差摊到前 (N%S) 段，使各段大小差至多 1）
-//   4) 每段独立 shuffle；段配额用最大余数法分配，保证 train 总数严格等于
-//      round(N*ratio)，且每段保留至少 1 个点给 train 和 insert（除非段长=1）
+// Stratified sampling over Z-order buckets:
+//   1) Compute a big-endian Z-key for every point and sort indexes lexicographically.
+//   2) Split into S contiguous, near-equal segments.
+//   3) Shuffle each segment and allocate quotas by largest remainder so the training
+//      total equals round(N*ratio), retaining both train and insert rows when possible.
 void stratified_partition(const std::vector<std::string>& lines,
                           int dim, double ratio, uint32_t seed, size_t strata,
                           std::vector<size_t>& train_idx,
@@ -158,7 +156,7 @@ void stratified_partition(const std::vector<std::string>& lines,
     const size_t base   = N / S;
     const size_t remain = N % S;
 
-    // 段配额按最大余数法分配：先 floor，剩余名额按小数部分降序补到差距最大的段
+    // Allocate segment quotas by largest remainder: floor first, then fill largest fractions.
     std::vector<size_t> seg_len(S);
     std::vector<size_t> quota(S);
     std::vector<double> frac(S);
@@ -170,14 +168,14 @@ void stratified_partition(const std::vector<std::string>& lines,
         const double q = static_cast<double>(seg_len[s]) * ratio;
         quota[s] = static_cast<size_t>(q);
         frac[s]  = q - static_cast<double>(quota[s]);
-        // 保留至少 1 train + 1 insert（段长 >= 2 时）
+        // Keep at least one training and one insertion row for segments of length >= 2.
         if (seg_len[s] >= 2) {
             if (quota[s] == 0)               quota[s] = 1;
             else if (quota[s] == seg_len[s]) quota[s] = seg_len[s] - 1;
         }
         allocated += quota[s];
     }
-    // 用余数排序补齐到 target_train，仅在不破坏 1/1 边界的段上增减
+    // Reach target_train by remainder order without breaking the one/one boundaries.
     std::vector<size_t> order_by_frac(S);
     std::iota(order_by_frac.begin(), order_by_frac.end(), 0);
     if (allocated < target_train) {
@@ -220,7 +218,7 @@ void stratified_partition(const std::vector<std::string>& lines,
 
         size_t n_train_seg = quota[s];
         if (len == 1 && quota[s] == 0) {
-            // len=1 段未拿到名额，全部留给 insert
+            // A single-row segment without quota goes entirely to insertion.
             n_train_seg = 0;
         }
         train_idx.insert(train_idx.end(),  seg.begin(), seg.begin() + n_train_seg);
@@ -244,7 +242,7 @@ int main(int argc, char** argv) {
     const int         strata_cli = (argc > 5) ? std::atoi(argv[5]) : 64;
 
     if (ratio <= 0.0 || ratio >= 1.0) {
-        std::cerr << "[error] train_ratio 必须在 (0, 1) 区间\n";
+        std::cerr << "[error] train_ratio must be in (0, 1)\n";
         return 2;
     }
 
@@ -257,13 +255,13 @@ int main(int argc, char** argv) {
     }
     const size_t N = lines.size();
     if (N < 2) {
-        std::cerr << "[error] 数据行数 " << N << " 不足以切分\n";
+        std::cerr << "[error] " << N << " data rows are insufficient for a split\n";
         return 4;
     }
 
     const int dim = detect_dim(lines.front());
     if (dim < 1 || dim > 16) {
-        std::cerr << "[error] 无法检测维度（首行逗号数异常: dim=" << dim << "）\n";
+        std::cerr << "[error] could not detect dimensions from the first row: dim=" << dim << "\n";
         return 5;
     }
 
@@ -286,7 +284,7 @@ int main(int argc, char** argv) {
     }
 
     if (train_idx.empty() || insert_idx.empty()) {
-        std::cerr << "[error] 切分后 train 或 insert 为空（N=" << N
+        std::cerr << "[error] training or insertion set is empty after splitting (N=" << N
                   << " ratio=" << ratio << "）\n";
         return 7;
     }
@@ -315,7 +313,7 @@ int main(int argc, char** argv) {
               << "  input   : " << full_path << " (N=" << N << " dim=" << dim << ")\n"
               << "  ratio   : " << ratio << "  seed=" << seed << "\n"
               << "  strategy: " << strategy << "\n"
-              << "  train   : " << train_path  << " (" << train_idx.size()  << " 行)\n"
-              << "  insert  : " << insert_path << " (" << insert_idx.size() << " 行)\n";
+              << "  train   : " << train_path  << " (" << train_idx.size()  << " rows)\n"
+              << "  insert  : " << insert_path << " (" << insert_idx.size() << " rows)\n";
     return 0;
 }

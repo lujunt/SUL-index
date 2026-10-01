@@ -15,19 +15,19 @@
 // #include "SM.h"
 using namespace ophelib;
 using namespace std;
-// 随机函数 F,随机生成0或1
+// Random function F producing zero or one.
 
 extern ophelib::Ciphertext global_enc_zero;
 extern ophelib::Ciphertext global_enc_one;
 int F();
 
-// 线程DAP
+// DAP worker.
 void SICDAPFunction(Ciphertext&, Ciphertext, PaillierFast& );
 
-// 线程DSP
+// DSP worker.
 void SICDSPFunction(Ciphertext , Ciphertext , Ciphertext&, PaillierFast&);
 
-// SICrun 函数
+// SIC protocol entry point.
 //string SICrun(string , string, Paillier&);
 Integer SICrun(Ciphertext, Ciphertext, PaillierFast&);
 

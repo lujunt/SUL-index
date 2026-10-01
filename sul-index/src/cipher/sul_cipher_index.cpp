@@ -29,7 +29,7 @@ SULCipherIndex::SULCipherIndex(const IndexConfig& config, CryptoContext& crypto)
 SULCipherIndex::~SULCipherIndex() = default;
 
 // ============================================================================
-// 加密单个数据点（DAP 将明文加密后交给 DSP）
+// Encrypt one data point on the DAP before sending it to the DSP.
 // ============================================================================
 void SULCipherIndex::encrypt_data_point(const DataPoint& src, EncDataPoint& dst) {
     dst.dim_count = src.dim_count;
@@ -50,7 +50,7 @@ void SULCipherIndex::encrypt_data_point(const DataPoint& src, EncDataPoint& dst)
 }
 
 // ============================================================================
-// 构建：明文构建 → 加密镜像
+// Build the plaintext index, then its encrypted mirror.
 // ============================================================================
 void SULCipherIndex::bulk_load(std::vector<DataPoint> points) {
     plain_.bulk_load(std::move(points));
@@ -64,7 +64,7 @@ void SULCipherIndex::build_encrypted_mirror() {
     const auto& plain_points = plain_.all_points();
     const int32_t kl = config_.key_len();
 
-    // 加密数据点
+    // Encrypt data points.
     enc_points_.clear();
     enc_points_.reserve(plain_points.size());
     std::unordered_map<const DataPoint*, EncDataPoint*> point_map;
@@ -75,7 +75,7 @@ void SULCipherIndex::build_encrypted_mirror() {
         enc_points_.push_back(std::move(edp));
     }
 
-    // 加密 GPL 内部层
+    // Encrypt GPL inner layers.
     enc_inner_layers_.clear();
     enc_inner_layers_.resize(plain_inner.size());
     for (size_t layer = 0; layer < plain_inner.size(); ++layer) {
@@ -94,7 +94,7 @@ void SULCipherIndex::build_encrypted_mirror() {
         }
     }
 
-    // 加密 GPL 叶子层
+    // Encrypt GPL leaves.
     enc_leaf_nodes_.clear();
     enc_leaf_nodes_.reserve(plain_leaves.size());
     for (size_t idx = 0; idx < plain_leaves.size(); ++idx) {
@@ -117,7 +117,7 @@ void SULCipherIndex::build_encrypted_mirror() {
         enc_leaf_nodes_.push_back(std::move(enc));
     }
 
-    // 加密 ART 层：从明文 ART 收集所有点，依次插入加密 ART
+    // Encrypt the ART layer by collecting plaintext ART points and inserting each one.
     enc_art_trees_.clear();
     enc_art_trees_.reserve(plain_arts.size());
     for (size_t i = 0; i < plain_arts.size(); ++i) {
@@ -131,9 +131,8 @@ void SULCipherIndex::build_encrypted_mirror() {
         enc_art_trees_.push_back(std::move(tree));
     }
 
-    // 填充每叶子 ciphertext coord bbox（含 GPL slots + ART 点）
-    // 用于范围查询中间叶子 OUTSIDE 剪枝；空叶子用 0 占位（不影响候选生成）
-    // 同步初始化 plain_bbox_lo_/hi_（DAP 侧明文 bbox，供 insert 增量更新）
+    // Build encrypted coordinate bboxes over GPL slots and ART points for each leaf.
+    // Empty leaves use zero placeholders. Also initialize DAP-side plaintext bboxes for updates.
     const int32_t D = config_.dim_count;
     plain_bbox_lo_.assign(enc_leaf_nodes_.size(), std::vector<int32_t>(D, 0));
     plain_bbox_hi_.assign(enc_leaf_nodes_.size(), std::vector<int32_t>(D, 0));
@@ -178,12 +177,9 @@ void SULCipherIndex::build_encrypted_mirror() {
 }
 
 // ============================================================================
-// SQQP：GPL 安全点查询（plan §16.1）
-// 每层：
-//   DSP: pos_cipher = OSM(v_int, slope_int) "+" Enc(intercept)  （论文公式）
-//        marker[i] = (child_ids[i] - Enc(child_rel)) * 同一噪声
-//   DAP: 解密 marker 找零位置
-// 简化：OSM 用于计入开销；目标 child_rel 由明文模型计算
+// SQQP secure GPL point query. At each level the DSP computes the encrypted predicted
+// position and blinded child markers; the DAP decrypts markers to find the zero position.
+// OSM accounts for protocol cost while the plaintext model determines child_rel.
 // ============================================================================
 int32_t SULCipherIndex::sqqp(__uint128_t plain_v) {
     if (enc_leaf_nodes_.empty()) return -1;
@@ -198,13 +194,13 @@ int32_t SULCipherIndex::sqqp(__uint128_t plain_v) {
         const EncGPLInnerNode& enc_node = enc_inner_layers_[layer][cur_idx];
         const GPLInnerNode&    pl_node  = plain_.inner_layers()[layer][cur_idx];
 
-        // DSP: OSM 模拟开销（消耗 1 解密 + 1 加密）
+        // DSP: OSM simulation consumes one decryption and one encryption.
         ophelib::Integer v_int = CryptoContext::u128_to_integer(plain_v);
         ophelib::Integer slope_int = crypto_.scale_float(pl_node.slope);
         Ciphertext osm_out = OSMrun(v_int, slope_int, crypto_.paillier());
         (void)osm_out;
 
-        // 明文预测得目标子树相对偏移
+        // The plaintext model predicts the target subtree's relative offset.
         double predicted = pl_node.slope * static_cast<double>(plain_v) + pl_node.intercept;
         int32_t child_rel = static_cast<int32_t>(std::floor(predicted));
         child_rel = clamp_int(child_rel, 0, pl_node.child_count - 1);
@@ -250,7 +246,7 @@ EncDataPoint* SULCipherIndex::sartq(int32_t art_tree_idx,
 }
 
 // ============================================================================
-// 安全点查询：SQQP → 学习层槽位 SIC 比较 → 未命中走 SARTQ
+// Secure point query: SQQP, SIC over learning slots, then SARTQ on a miss.
 // ============================================================================
 EncDataPoint* SULCipherIndex::point_query(const int32_t* coords) {
     return point_query_with_stats(coords, nullptr);
@@ -302,7 +298,7 @@ EncDataPoint* SULCipherIndex::point_query_with_stats(const int32_t* coords,
 
     auto t_after_learning = clk::now();
 
-    // ART 层
+    // ART layer.
     uint8_t kb[MAX_KEY_BYTES] = {};
     encoder_.encode_to_bytes(coords, kb);
     std::vector<Ciphertext> enc_kb;
@@ -323,7 +319,7 @@ EncDataPoint* SULCipherIndex::point_query_with_stats(const int32_t* coords,
 }
 
 // ============================================================================
-// 安全范围查询：SHRQ（plan §16.3）
+// SHRQ secure range query.
 // ============================================================================
 std::vector<EncDataPoint*> SULCipherIndex::range_query(const int32_t* low,
                                                        const int32_t* high) {
@@ -388,7 +384,7 @@ std::vector<EncDataPoint*> SULCipherIndex::range_query_impl(
 
     auto t_after_learning = clk::now();
 
-    // 把 query [low, high] 加密前置：bbox SIC 检查与 SPI 共用同一份密文
+    // Encrypt query bounds once and reuse them for bbox SIC checks and SPI.
     std::vector<Ciphertext> enc_ql, enc_qr;
     enc_ql.reserve(config_.dim_count);
     enc_qr.reserve(config_.dim_count);
@@ -402,12 +398,9 @@ std::vector<EncDataPoint*> SULCipherIndex::range_query_impl(
     size_t middle_total  = 0;
     size_t middle_pruned = 0;
 
-    // Layer 1 OUTSIDE 剪枝（密文版）：用 SIC 判定 bbox 与 [low,high] 是否任一维不相交
-    //   per-dim：cmp_low_in = SIC(enc_ql[d], coord_hi_enc[d])  → 期望 1 (low <= hi)
-    //            cmp_hi_in  = SIC(coord_lo_enc[d], enc_qr[d])  → 期望 1 (lo  <= high)
-    //   两次 SIC 并行（cmp_hi_in 在额外线程，cmp_low_in 在主线程），任一不为 1 → OUTSIDE
-    //   跨维顺序循环保留早返回（dim 0 OUTSIDE 则不进入 dim 1）
-    // Note: cipher bbox 由 insert 路径增量同步（plain_bbox_lo_/hi_ 驱动），保证 sound
+    // Layer 1 OUTSIDE pruning: SIC checks whether the bbox is disjoint from [low, high]
+    // in any dimension. The two comparisons within a dimension run in parallel, while
+    // dimensions remain sequential for early exit. Insertions keep encrypted bboxes sound.
     auto leaf_outside = [&](const EncGPLLeafNode& leaf) -> bool {
         for (int32_t d = 0; d < config_.dim_count; ++d) {
             Integer cmp_low_in;
@@ -423,9 +416,8 @@ std::vector<EncDataPoint*> SULCipherIndex::range_query_impl(
     };
 
     if (left == right) {
-        // 收集叶子中所有有效槽位（不按 z 值过滤）：与 plain 端 collect_leaf_slots_all 对齐
-        // Z-曲线在位翻转处不连续，矩形 [low,high] 内的点其 z 值不一定 ∈ [z_lo, z_hi]，
-        // 按 lefid/rigid 截断会漏点；由后段 SPI 维度坐标精滤兜底正确性
+        // Collect all valid slots without Z-order filtering, matching the plaintext path.
+        // Z-curve discontinuities make such filtering incomplete; SPI provides exact filtering.
         for (int32_t p = 0; p < enc_leaf_nodes_[left].slot_count; ++p)
             if (enc_leaf_nodes_[left].occupied[p] && enc_leaf_nodes_[left].data_slots[p])
                 candidates.push_back(enc_leaf_nodes_[left].data_slots[p]);
@@ -433,7 +425,7 @@ std::vector<EncDataPoint*> SULCipherIndex::range_query_impl(
         if (art && !art->empty())
             for (auto* p : art->range_search(kb_lo, kb_hi)) candidates.push_back(p);
     } else {
-        // 左叶子：扫所有槽位（与 plain 一致，避免 Z-曲线漏点）
+        // Scan every slot in the left leaf to avoid Z-curve false negatives.
         for (int32_t p = 0; p < enc_leaf_nodes_[left].slot_count; ++p)
             if (enc_leaf_nodes_[left].occupied[p] && enc_leaf_nodes_[left].data_slots[p])
                 candidates.push_back(enc_leaf_nodes_[left].data_slots[p]);
@@ -445,7 +437,7 @@ std::vector<EncDataPoint*> SULCipherIndex::range_query_impl(
                 for (auto* p : art->range_search(kb_lo, kb_max)) candidates.push_back(p);
             }
         }
-        // 中间叶子：bbox OUTSIDE 剪枝 → 跳过；否则全量收（bbox 由 insert 同步维护）
+        // Skip OUTSIDE middle leaves; otherwise collect all points.
         for (int32_t i = left + 1; i < right; ++i) {
             ++middle_total;
             const EncGPLLeafNode& mleaf = enc_leaf_nodes_[i];
@@ -460,7 +452,7 @@ std::vector<EncDataPoint*> SULCipherIndex::range_query_impl(
             if (art && !art->empty())
                 for (auto* p : art->collect_all()) candidates.push_back(p);
         }
-        // 右叶子：扫所有槽位（与 plain 一致，避免 Z-曲线漏点）
+        // Scan every slot in the right leaf to avoid Z-curve false negatives.
         for (int32_t p = 0; p < enc_leaf_nodes_[right].slot_count; ++p)
             if (enc_leaf_nodes_[right].occupied[p] && enc_leaf_nodes_[right].data_slots[p])
                 candidates.push_back(enc_leaf_nodes_[right].data_slots[p]);
@@ -475,7 +467,7 @@ std::vector<EncDataPoint*> SULCipherIndex::range_query_impl(
 
     auto t_after_collect = clk::now();
 
-    // SPI 过滤（enc_ql/enc_qr 已在 bbox 检查前加密好，直接复用）
+    // SPI filtering reuses query bounds encrypted before bbox checks.
     if (filter_candidates) {
         for (EncDataPoint* edp : candidates) {
             if (SPIrun(edp->dimensions, enc_ql, enc_qr, crypto_.paillier()) == 1)
@@ -506,15 +498,14 @@ std::vector<EncDataPoint*> SULCipherIndex::range_query_impl(
 }
 
 // ============================================================================
-// 安全插入：明文索引同步插入 → 密文镜像写入对应位置
+// Secure insertion: update the plaintext index and corresponding encrypted mirror position.
 // ============================================================================
 InsertResult SULCipherIndex::insert(const int32_t* coords) {
     if (enc_leaf_nodes_.empty()) return InsertResult::Failed;
-    // 反序列化加载后没有持有 plain DataPoint 数据，无法支持插入
+    // Deserialized indexes have no plaintext DataPoints and cannot support insertion.
     if (is_loaded_) return InsertResult::Failed;
 
-    // 在 plain_.insert 之前记录 orig_id：明文版用 total_points() 作 ID
-    // 必须在 plain_.insert 之前取值，使两侧 ID 完全一致
+    // Capture orig_id before plain_.insert, which uses total_points(), so both sides match.
     int32_t new_orig_id = static_cast<int32_t>(plain_.total_points());
 
     InsertResult plain_result = plain_.insert(coords);
@@ -538,8 +529,8 @@ InsertResult SULCipherIndex::insert(const int32_t* coords) {
     EncGPLLeafNode& enc_leaf = enc_leaf_nodes_[leaf_idx];
     const GPLLeafNode& pl_leaf = plain_.leaf_nodes()[leaf_idx];
 
-    // 同步更新 leaf bbox：若新点扩张 plain_bbox 任一维，则 re-encrypt 对应 cipher bbox
-    // 维护 leaf_outside 中间叶子剪枝的正确性（每次 insert 至多 dim*2 次 Paillier 加密）
+    // Re-encrypt any leaf bbox boundary expanded by the new point, preserving sound
+    // middle-leaf pruning with at most dim*2 Paillier encryptions per insertion.
     if (static_cast<size_t>(leaf_idx) < plain_bbox_lo_.size()) {
         auto& bb_lo = plain_bbox_lo_[leaf_idx];
         auto& bb_hi = plain_bbox_hi_[leaf_idx];

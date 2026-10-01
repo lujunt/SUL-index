@@ -1,16 +1,15 @@
-// SUL-cipher-index demo（参数化 K/err，支持插入文件 + record 输出）
+// SUL-cipher-index demo with configurable K/err, insertion input, and record output.
 //
-// 用法:
+// Usage:
 //   ./sul_cipher_demo <dataset_csv> <query_csv> [K=1024] [err=-1] [insert_csv] [npq=20]
 //
-// 参数说明:
-//   K          : Paillier 密钥位数。候选 1024 / 2048 / 3072 / 4096
-//   err        : 学习层误差界 ε。≤0 时默认 4
-//   insert_csv : 可选；同 dataset 格式（首行 dim_count，其后每行 dim 个整数）
-//                提供时把 random insert 替换为读取该文件全量插入
-//   npq        : 批量点查询的样本数。默认 20，从 dataset 抽样
+// Arguments:
+//   K          : Paillier key size: 1024, 2048, 3072, or 4096.
+//   err        : Learning-layer error bound; values <= 0 default to 4.
+//   insert_csv : Optional dataset-format file whose rows replace random insertions.
+//   npq        : Number of sampled point queries; default 20.
 //
-// 产出:
+// Output:
 //   record/build_<stem>_K{K}_err{err}_dim{d}.csv
 //   record/rangequery_<stem>_K{K}_err{err}_dim{d}_sl{tag}.csv
 
@@ -41,7 +40,7 @@ void println(const char* label, double ms) {
     std::cout << "  " << label << ": " << ms << " ms\n";
 }
 
-// 从 query 文件名提取窗口百分比（query_loader 不会自动填）
+// Extract window selectivity from the query file name; query_loader does not populate it.
 //   uniform_20000_0.25.csv → 0.25
 double parse_sl_pct_from_path(const std::string& path) {
     auto slash = path.find_last_of('/');
@@ -54,7 +53,7 @@ double parse_sl_pct_from_path(const std::string& path) {
     catch (...) { return 0.0; }
 }
 
-// 估算每个 Paillier 密文字节数：n² 约 2*K 比特
+// Estimate ciphertext size: Paillier n^2 is approximately 2*K bits.
 size_t ct_bytes_estimate(int K) { return static_cast<size_t>(K) / 4; }
 
 struct CipherSizeBreakdown {
@@ -90,7 +89,7 @@ CipherSizeBreakdown estimate_cipher_size(const SULCipherIndex& idx) {
     return b;
 }
 
-// 召回率：用明文索引作为真值；当前 demo 中密文索引返回与明文一致 → recall 计算为 1.0
+// Recall uses the plaintext index as ground truth.
 double compute_range_recall(const SULCipherIndex& idx,
                             const std::vector<util::QueryRect>& queries) {
     if (queries.empty()) return 1.0;
@@ -149,12 +148,12 @@ int main(int argc, char** argv) {
     const int32_t DIM = ds.dim_count;
     if (DIM != qf.dim_count) {
         std::cerr << "[error] dataset dim=" << DIM
-                  << " query dim=" << qf.dim_count << " 不匹配\n";
+                  << " query dim=" << qf.dim_count << " do not match\n";
         return 3;
     }
     if (!insert_path.empty() && ins.dim_count != DIM) {
         std::cerr << "[error] insert dim=" << ins.dim_count
-                  << " 与 dataset dim=" << DIM << " 不一致\n";
+                  << " does not match dataset dim=" << DIM << "\n";
         return 3;
     }
     const int32_t err = (err_cli > 0) ? err_cli : 4;
@@ -163,8 +162,8 @@ int main(int argc, char** argv) {
     std::cout << "  dataset: N=" << N << " dim=" << DIM
               << " err=" << err
               << " sl_pct=" << sl_pct << "\n"
-              << "  insert : " << ins.data.size() << " 点\n"
-              << "  query  : " << qf.queries.size() << " 条范围查询\n";
+              << "  insert : " << ins.data.size() << " points\n"
+              << "  query  : " << qf.queries.size() << " range queries\n";
 
     std::vector<std::vector<int32_t>> pq_coords;
     {
@@ -193,7 +192,7 @@ int main(int argc, char** argv) {
     idx.bulk_load(std::move(ds.data));
     auto b1 = std::chrono::steady_clock::now();
     double build_ms = std::chrono::duration<double, std::milli>(b1 - b0).count();
-    println("bulk_load (含加密)", build_ms);
+    println("bulk_load (including encryption)", build_ms);
 
     size_t gpl_inner_total = 0, gpl_inner_layers = idx.inner_layer_count();
     for (const auto& layer : idx.plain().inner_layers())
@@ -248,7 +247,7 @@ int main(int argc, char** argv) {
         std::cout << "  → record: " << path << "\n";
     }
 
-    std::cout << "\n--- 批量点查询 (npq=" << NPQ << ") ---\n";
+    std::cout << "\n--- Batch point queries (npq=" << NPQ << ") ---\n";
     double pq_total_us = 0, pq_learn_us = 0, pq_art_us = 0;
     int hit_l = 0, hit_a = 0, miss = 0;
     for (const auto& coords : pq_coords) {
@@ -270,7 +269,7 @@ int main(int argc, char** argv) {
               << "  avg learning = " << (NPQ ? pq_learn_us / NPQ : 0) << " us\n"
               << "  avg art      = " << (NPQ ? pq_art_us   / NPQ : 0) << " us\n";
 
-    std::cout << "\n--- 批量范围查询 ---\n";
+    std::cout << "\n--- Batch range queries ---\n";
     double rq_total_ms = 0, rq_learn_us_sum = 0, rq_art_us_sum = 0;
     size_t rq_returned_total = 0;
     for (const auto& q : qf.queries) {
@@ -323,8 +322,8 @@ int main(int argc, char** argv) {
     }
 
     if (!ins.data.empty()) {
-        std::cout << "\n--- 批量插入 (来自 " << insert_path << ", "
-                  << ins.data.size() << " 点) ---\n";
+        std::cout << "\n--- Batch insertion (from " << insert_path << ", "
+                  << ins.data.size() << " points) ---\n";
         double ins_total_us = 0;
         int cnt_learn = 0, cnt_art = 0, cnt_fail = 0;
         for (const auto& dp : ins.data) {

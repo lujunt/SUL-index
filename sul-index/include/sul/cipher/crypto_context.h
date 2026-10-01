@@ -7,38 +7,38 @@
 
 namespace sul::cipher {
 
-// CryptoContext：封装 Paillier 密钥与"浮点⇄整数"缩放
-// - 全局共享一个 PaillierFast 实例（构建/查询双方都引用）
-// - SCALE 与 agreements/OSM.cpp 中常量一致（100000），用于将浮点 slope/intercept 转为整数
+// CryptoContext owns Paillier keys and floating-point/integer scaling.
+// A single PaillierFast instance is shared by builders and queries. SCALE matches
+// agreements/OSM.cpp (100000) and converts slope/intercept values to integers.
 class CryptoContext {
 public:
     static constexpr int32_t SCALE = 100000;
 
     explicit CryptoContext(int key_size = 1024);
 
-    // 从已有 Paillier 密钥对构造（反序列化路径）
+    // Construct from an existing Paillier key pair during deserialization.
     CryptoContext(int key_size, const ophelib::KeyPair& kp);
 
     ophelib::PaillierFast& paillier() { return *paillier_; }
     const ophelib::PaillierFast& paillier() const { return *paillier_; }
 
-    // 整数 ↔ 密文
+    // Integer/ciphertext conversion.
     ophelib::Ciphertext encrypt_i64(int64_t v) const;
-    ophelib::Ciphertext encrypt_u128(__uint128_t v) const;  // 128 位无符号（z_value）
+    ophelib::Ciphertext encrypt_u128(__uint128_t v) const;  // Unsigned 128-bit Z-order value.
     ophelib::Ciphertext encrypt_int(const ophelib::Integer& v) const;
     ophelib::Integer    decrypt(const ophelib::Ciphertext& ct) const;
 
-    // 工具：__uint128_t → ophelib::Integer（hex 字符串构造）
+    // Convert __uint128_t to ophelib::Integer through a hexadecimal string.
     static ophelib::Integer u128_to_integer(__uint128_t v);
 
-    // 浮点 ↔ 缩放整数（用于 slope / intercept 编码）
+    // Floating-point/scaled-integer conversion for slope and intercept encoding.
     ophelib::Integer scale_float(double v) const;
     double           unscale_float(const ophelib::Integer& v) const;
 
-    // 缩放后整数加密（slope/intercept 专用）
+    // Encrypt a scaled slope or intercept.
     ophelib::Ciphertext encrypt_float(double v) const;
 
-    // 全局加密 0/1 常量（OSM/SIC 协议需要）
+    // Global encrypted zero/one constants required by OSM and SIC.
     const ophelib::Ciphertext& enc_zero() const { return *enc_zero_; }
     const ophelib::Ciphertext& enc_one()  const { return *enc_one_;  }
 

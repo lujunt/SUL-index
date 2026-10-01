@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""从10万源数据固定种子随机划分重训练实验的初始数据。"""
+"""Create initial retraining data by splitting a 100K source dataset with a fixed seed."""
 import argparse
 import csv
 import hashlib

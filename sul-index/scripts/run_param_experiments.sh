@@ -1,30 +1,30 @@
 #!/usr/bin/env bash
-# 参数实验批量执行脚本
+# Batch parameter-experiment runner.
 #
-# 用法（从 sul-index/ 目录执行；脚本会自动切换到 sul-index 根）:
-#   bash scripts/run_param_experiments.sh                    # 全部 6 数据集 × 5 sweep
-#   bash scripts/run_param_experiments.sh "UNI MBF"          # 仅 UNI 与 MBF 全部 sweep
-#   bash scripts/run_param_experiments.sh UNI sl             # UNI 仅 sl sweep
-#   bash scripts/run_param_experiments.sh "UNI MBF" "sl d"   # 自定义子集
-#   bash scripts/run_param_experiments.sh SKE                # 仅 SKE 全部 sweep
+# Usage from sul-index/ (the script changes to the project directory automatically):
+#   bash scripts/run_param_experiments.sh                    # all datasets and sweeps
+#   bash scripts/run_param_experiments.sh "UNI MBF"          # all sweeps for UNI and MBF
+#   bash scripts/run_param_experiments.sh UNI sl             # selectivity sweep for UNI
+#   bash scripts/run_param_experiments.sh "UNI MBF" "sl d"   # custom subset
+#   bash scripts/run_param_experiments.sh SKE                # all sweeps for SKE
 #
-# 参数矩阵（与 SUL-indx 实验设置.md 一致）:
-#   默认: N=20000, d=2, K=1024, err=4, sl=0.25%
+# Parameter matrix:
+#   Default: N=20000, d=2, K=1024, err=4, sl=0.25%.
 #   sl  : 0.25 / 0.5 / 1 / 2 / 4
 #   N   : 20000 / 40000 / 60000 / 80000 / 100000
 #   d   : 2 / 3 / 4 / 5 / 6
 #   err : 1 / 2 / 4 / 8 / 16
 #   K   : 1024 / 2048 / 3072 / 4096
 #
-# 产出:
+# Output:
 #   record/build_<stem>_K{K}_err{err}_dim{d}.csv
 #   record/rangequery_<stem>_K{K}_err{err}_dim{d}_sl{tag}.csv
-#   logs/run_<STEM>_<SWEEP>.log    每个 sweep 一份完整 stdout/stderr
+#   logs/run_<STEM>_<SWEEP>.log    complete stdout/stderr for each sweep
 #
-# 前置：
-#   1. cmake --build build 已构建 sul_compare_demo
-#   2. datasets/<STEM>_<N>_<suffix>_<d>.csv 齐备
-#   3. query/<STEM>_<N>_dim<d>_<sl>.csv 齐备
+# Prerequisites:
+#   1. Build sul_compare_demo with cmake --build build.
+#   2. Prepare datasets/<STEM>_<N>_<suffix>_<d>.csv.
+#   3. Prepare query/<STEM>_<N>_dim<d>_<sl>.csv.
 #      (suffix: UNI=1, ABUS/MBF/PLUT/USAC=0, SKE=4)
 
 set -uo pipefail
@@ -32,7 +32,7 @@ cd "$(dirname "$0")/.." || { echo "[error] cannot cd to sul-index root"; exit 1;
 
 EXE=./build/sul_compare_demo
 if [ ! -x "$EXE" ]; then
-    echo "[error] $EXE 不存在或不可执行；请先 cmake --build build"; exit 1
+    echo "[error] $EXE is missing or not executable; run cmake --build build first"; exit 1
 fi
 
 DATASETS="${1:-UNI ABUS MBF PLUT USAC SKE}"
@@ -61,11 +61,11 @@ suffix_for() {
     esac
 }
 
-# 单次 sul_compare_demo 调用：失败也不中断 sweep，仅记录 [warn]
+# A failed sul_compare_demo invocation logs a warning without stopping the sweep.
 run_compare() {
     local label=$1 ds=$2 q=$3 k=$4 err=$5 log=$6
-    if [ ! -f "$ds" ]; then echo "[warn] 缺数据集 $ds (跳过 $label)" | tee -a "$log"; return; fi
-    if [ ! -f "$q"  ]; then echo "[warn] 缺查询文件 $q (跳过 $label)" | tee -a "$log"; return; fi
+    if [ ! -f "$ds" ]; then echo "[warn] missing dataset $ds (skipping $label)" | tee -a "$log"; return; fi
+    if [ ! -f "$q"  ]; then echo "[warn] missing query file $q (skipping $label)" | tee -a "$log"; return; fi
     echo "===== [$(date +%T)] $label =====" >>"$log"
     "$EXE" "$ds" "$q" "$k" "$err" >>"$log" 2>&1
     local rc=$?
@@ -113,7 +113,7 @@ run_sweep() {
                 "$K" "$DEFAULT_ERR" "$log"
         done ;;
       *)
-        echo "[error] unknown sweep '$sweep' (合法: sl N d err K)" >&2; exit 2 ;;
+        echo "[error] unknown sweep '$sweep' (valid: sl N d err K)" >&2; exit 2 ;;
     esac
 }
 
@@ -132,13 +132,13 @@ for stem in $DATASETS; do
         ts=$SECONDS
         run_sweep "$stem" "$sweep" "$log"
         elapsed=$((SECONDS - ts))
-        pass=$(grep -c "结论: PASS" "$log" || true)
-        fail=$(grep -c "结论: FAIL" "$log" || true)
+        pass=$(grep -c "Result: PASS" "$log" || true)
+        fail=$(grep -c "Result: FAIL" "$log" || true)
         printf "[%2d/%2d] %-4s %-8s %-12s P=%-3d/F=%-3d %s\n" \
             "$i" "$total" "$stem" "$sweep" "${elapsed}s" "$pass" "$fail" "$log"
     done
 done
 
 echo "--------------------------------------------------------------------------"
-echo "全部完成，总耗时 $((SECONDS - ALL_START))s"
-echo "record/ CSV 数量: $(ls record/*.csv 2>/dev/null | wc -l)"
+echo "All runs completed in $((SECONDS - ALL_START))s"
+echo "record/ CSV count: $(ls record/*.csv 2>/dev/null | wc -l)"

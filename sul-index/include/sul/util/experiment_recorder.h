@@ -5,11 +5,10 @@
 
 namespace sul::util {
 
-// 实验参数标记。文件命名拼接：
+// Experiment parameter tags used in output file names:
 //   <kind>_<dataset_stem>_K{K}_err{err}_dim{dim}{extra}.csv
-// 注：N 已隐含在 dataset_stem 中（如 uniform_20000 / skewed_20000），
-//     不再单独追加 _N 后缀。
-// extra 由调用者按实验类型自定义，例如：
+// N is already present in dataset_stem (for example, uniform_20000), so no separate
+// _N suffix is appended. Callers customize extra for each experiment type, for example:
 //   range  → "_sl0p25"
 //   work   → "_R80W20"
 //   update → "_ul0p25"
@@ -23,25 +22,25 @@ struct ExpParams {
 
 class ExperimentRecorder {
 public:
-    // 生成 record/{kind}_<stem>_K..._err..._dim...{extra}.csv 绝对路径
-    // record_dir 为空时回退到 ./record/（相对当前工作目录）
+    // Return an absolute record/{kind}_<stem>_K..._err..._dim...{extra}.csv path.
+    // An empty record_dir falls back to ./record/ relative to the working directory.
     static std::string build_path(const std::string& kind,
                                   const ExpParams& p,
                                   const std::string& record_dir = "");
 
-    // 追加一行；若文件不存在则先创建并写入 header
-    // header 与 row 必须长度一致
+    // Append one row, creating the file and header when necessary.
+    // header and row must have equal lengths.
     static void append_row(const std::string& path,
                            const std::vector<std::string>& header,
                            const std::vector<std::string>& row);
 
-    // ISO-8601 局部时间戳，例如 2026-05-22T15:03:01
+    // ISO-8601 local timestamp, for example 2026-05-22T15:03:01.
     static std::string now_iso();
 
-    // 浮点 → 字符串（避免科学计数）
+    // Convert a floating-point value without scientific notation.
     static std::string ftoa(double v);
 
-    // 小数 → 文件名安全标记
+    // Convert a decimal value to a file-name-safe tag.
     //   pct_tag(0.25) -> "0p25"
     static std::string pct_tag(double pct);
 };
