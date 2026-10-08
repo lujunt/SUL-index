@@ -1,6 +1,6 @@
 # SDLM-index (also named SUL-index)
 
-SDLM-index (i.e., SUL-index) combines multi-level secure greedy pessimistic linear models for ciphertext-domain index prediction with secure prefix trees that manage conflict points and dynamic updates. SUL-index is a multi-dimensional learned index with two implementations:
+SDLM-index (i.e., SUL-index) is a secure dynamic learned multi-dimensional index, which combines multi-level secure greedy pessimistic linear models for ciphertext-domain index prediction with secure prefix trees that manage conflict points and dynamic updates.
 
 ## How to use
 
