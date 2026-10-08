@@ -1,13 +1,6 @@
-# SUL-index
+# SDLM-index (also named SUL-index)
 
-SUL-index is a multidimensional learned index with two implementations:
-
-- `sul_index`: a plaintext GPL learned layer backed by Adaptive Radix Trees (ART).
-- `sul_cipher_index`: a Paillier-encrypted mirror that implements secure point, range,
-  insertion, serialization, workload, and adaptive-retraining experiments.
-
-Multidimensional coordinates are quantized to 16 bits per dimension and mapped to
-Z-order keys. The current implementation supports two to six dimensions.
+SDLM-index (i.e., SUL-index) combines multi-level secure greedy pessimistic linear models for ciphertext-domain index prediction with secure prefix trees that manage conflict points and dynamic updates. SUL-index is a multi-dimensional learned index with two implementations:
 
 ## How to use
 
